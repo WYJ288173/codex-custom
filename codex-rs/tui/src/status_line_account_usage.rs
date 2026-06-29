@@ -2,6 +2,10 @@ use chrono::Datelike;
 use chrono::Duration;
 use chrono::NaiveDate;
 use codex_app_server_protocol::GetAccountTokenUsageResponse;
+use std::time::Duration as StdDuration;
+use std::time::Instant;
+
+pub(crate) const REFRESH_INTERVAL: StdDuration = StdDuration::from_secs(5 * 60);
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AccountUsageSummary {
@@ -9,6 +13,52 @@ pub(crate) struct AccountUsageSummary {
     pub(crate) weekly: Option<i64>,
     pub(crate) monthly: Option<i64>,
     pub(crate) total: Option<i64>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct AccountUsageTracker {
+    summary: Option<AccountUsageSummary>,
+    pending_request_id: Option<u64>,
+    last_requested_at: Option<Instant>,
+    next_request_id: u64,
+}
+
+impl AccountUsageTracker {
+    pub(crate) fn request_if_due(&mut self, now: Instant) -> Option<u64> {
+        if self.pending_request_id.is_some()
+            || self
+                .last_requested_at
+                .is_some_and(|last| now.saturating_duration_since(last) < REFRESH_INTERVAL)
+        {
+            return None;
+        }
+
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.wrapping_add(1);
+        self.pending_request_id = Some(request_id);
+        self.last_requested_at = Some(now);
+        Some(request_id)
+    }
+
+    pub(crate) fn complete(
+        &mut self,
+        request_id: u64,
+        result: Result<GetAccountTokenUsageResponse, String>,
+        today: NaiveDate,
+    ) -> bool {
+        if self.pending_request_id != Some(request_id) {
+            return false;
+        }
+        self.pending_request_id = None;
+        if let Ok(response) = result {
+            self.summary = Some(summarize_account_usage(&response, today));
+        }
+        true
+    }
+
+    pub(crate) fn summary(&self) -> Option<&AccountUsageSummary> {
+        self.summary.as_ref()
+    }
 }
 
 pub(crate) fn summarize_account_usage(
@@ -126,5 +176,55 @@ mod tests {
         assert_eq!(result.weekly, None);
         assert_eq!(result.monthly, None);
         assert_eq!(result.total, Some(42_100_000));
+    }
+
+    #[test]
+    fn tracker_requests_immediately_then_waits_five_minutes() {
+        let now = Instant::now();
+        let mut tracker = AccountUsageTracker::default();
+        assert_eq!(tracker.request_if_due(now), Some(0));
+        assert_eq!(
+            tracker.request_if_due(now + StdDuration::from_secs(299)),
+            None
+        );
+        assert!(tracker.complete(
+            0,
+            Ok(response()),
+            NaiveDate::from_ymd_opt(2026, 6, 29).expect("valid date"),
+        ));
+        assert_eq!(
+            tracker.request_if_due(now + StdDuration::from_secs(299)),
+            None
+        );
+        assert_eq!(tracker.request_if_due(now + REFRESH_INTERVAL), Some(1));
+    }
+
+    #[test]
+    fn tracker_retains_last_success_after_refresh_error() {
+        let now = Instant::now();
+        let mut tracker = AccountUsageTracker::default();
+        let first = tracker.request_if_due(now).expect("initial request");
+        assert!(tracker.complete(
+            first,
+            Ok(response()),
+            NaiveDate::from_ymd_opt(2026, 6, 29).expect("valid date"),
+        ));
+        assert_eq!(
+            tracker.summary().and_then(|summary| summary.total),
+            Some(42_100_000)
+        );
+
+        let second = tracker
+            .request_if_due(now + REFRESH_INTERVAL)
+            .expect("refresh request");
+        assert!(tracker.complete(
+            second,
+            Err("offline".to_string()),
+            NaiveDate::from_ymd_opt(2026, 6, 29).expect("valid date"),
+        ));
+        assert_eq!(
+            tracker.summary().and_then(|summary| summary.total),
+            Some(42_100_000)
+        );
     }
 }
