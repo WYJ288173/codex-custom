@@ -4,6 +4,8 @@
 //! behavior easier to review without paging through the rest of `chatwidget.rs`.
 
 use super::*;
+use crate::bottom_pane::ClaudeStatusLineData;
+use crate::bottom_pane::render_claude_status_line;
 use crate::bottom_pane::status_line_from_segments;
 use crate::branch_summary;
 use crate::chatwidget::limit_label_for_window;
@@ -141,7 +143,10 @@ impl ChatWidget {
     }
 
     fn sync_status_surface_shared_state(&mut self, selections: &StatusSurfaceSelections) {
-        if !selections.uses_git_branch() {
+        let claude_status_line_enabled = self.config.tui_status_line_layout
+            == StatusLineLayout::Claude
+            && !selections.status_line_items.is_empty();
+        if !selections.uses_git_branch() && !claude_status_line_enabled {
             self.status_line_branch = None;
             self.status_line_branch_pending = false;
             self.status_line_branch_lookup_complete = false;
@@ -184,23 +189,63 @@ impl ChatWidget {
             return;
         }
 
-        let mut segments = Vec::new();
-        for item in &selections.status_line_items {
-            if let Some(value) = self.status_line_value_for_item(*item) {
-                segments.push((*item, value));
+        match self.config.tui_status_line_layout {
+            StatusLineLayout::SingleLine => {
+                let mut segments = Vec::new();
+                for item in &selections.status_line_items {
+                    if let Some(value) = self.status_line_value_for_item(*item) {
+                        segments.push((*item, value));
+                    }
+                }
+                self.set_status_line(status_line_from_segments(
+                    segments,
+                    self.config.tui_status_line_use_colors,
+                ));
+            }
+            StatusLineLayout::Claude => {
+                let width = self
+                    .last_rendered_width
+                    .get()
+                    .unwrap_or(180)
+                    .saturating_sub(crate::ui_consts::FOOTER_INDENT_COLS)
+                    .min(usize::from(u16::MAX)) as u16;
+                let data = self.claude_status_line_data();
+                self.set_status_lines(render_claude_status_line(&data, width));
             }
         }
-
-        self.set_status_line(status_line_from_segments(
-            segments,
-            self.config.tui_status_line_use_colors,
-        ));
-        let hyperlink_url = selections
-            .status_line_items
-            .contains(&StatusLineItem::PullRequestNumber)
-            .then(|| self.status_line_pull_request_url())
+        let hyperlink_url = (self.config.tui_status_line_layout == StatusLineLayout::SingleLine)
+            .then(|| {
+                selections
+                    .status_line_items
+                    .contains(&StatusLineItem::PullRequestNumber)
+                    .then(|| self.status_line_pull_request_url())
+                    .flatten()
+            })
             .flatten();
         self.set_status_line_hyperlink(hyperlink_url);
+    }
+
+    fn claude_status_line_data(&self) -> ClaudeStatusLineData {
+        let usage = self.status_line_total_usage();
+        let rate_limits = self.rate_limit_snapshots_by_limit_id.get("codex");
+        let five_hour_limit = rate_limits
+            .and_then(five_hour_status_window)
+            .map(|(window, _)| format!("5h {:.0}%", window.used_percent.clamp(0.0, 100.0)));
+        let weekly_limit = rate_limits
+            .and_then(weekly_status_window)
+            .map(|(window, _)| format!("Limit/week {:.0}%", window.used_percent.clamp(0.0, 100.0)));
+        ClaudeStatusLineData {
+            model: self.model_display_name().to_string(),
+            reasoning: Some(self.reasoning_display_name()),
+            current_dir: format_directory_display(self.status_line_cwd(), /*max_width*/ None),
+            git_branch: self.status_line_branch.clone(),
+            context_used_percent: self.status_line_context_used_percent(),
+            session_input_tokens: usage.input_tokens,
+            session_output_tokens: usage.output_tokens,
+            account_usage: self.status_line_account_usage.summary().cloned(),
+            five_hour_limit,
+            weekly_limit,
+        }
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.
