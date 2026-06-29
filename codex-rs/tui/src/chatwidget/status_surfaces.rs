@@ -10,7 +10,9 @@ use crate::chatwidget::limit_label_for_window;
 use crate::chatwidget::rate_limits::get_limits_duration;
 use crate::legacy_core::config::Config;
 use crate::status::format_tokens_compact;
+use crate::status_line_account_usage::REFRESH_INTERVAL as ACCOUNT_USAGE_REFRESH_INTERVAL;
 use codex_app_server_protocol::AskForApproval;
+use codex_config::types::StatusLineLayout;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::PermissionProfile;
@@ -278,6 +280,7 @@ impl ChatWidget {
         self.warn_invalid_status_line_items_once(&selections.invalid_status_line_items);
         self.warn_invalid_terminal_title_items_once(&selections.invalid_terminal_title_items);
         self.sync_status_surface_shared_state(&selections);
+        self.request_status_line_account_usage_if_due(Instant::now(), &selections);
         self.refresh_status_line_from_selections(&selections);
         self.refresh_terminal_title_from_selections(&selections);
     }
@@ -608,6 +611,52 @@ impl ChatWidget {
         {
             self.refresh_status_line();
         }
+    }
+
+    fn request_status_line_account_usage_if_due(
+        &mut self,
+        now: Instant,
+        selections: &StatusSurfaceSelections,
+    ) {
+        if self.config.tui_status_line_layout != StatusLineLayout::Claude
+            || selections.status_line_items.is_empty()
+            || !self.has_codex_backend_auth
+        {
+            return;
+        }
+        if let Some(request_id) = self.status_line_account_usage.request_if_due(now) {
+            self.app_event_tx
+                .send(AppEvent::RefreshStatusLineAccountUsage { request_id });
+            self.frame_requester
+                .schedule_frame_in(ACCOUNT_USAGE_REFRESH_INTERVAL);
+        }
+    }
+
+    pub(super) fn refresh_status_line_if_account_usage_due(&mut self) {
+        if self.config.tui_status_line_layout != StatusLineLayout::Claude {
+            return;
+        }
+        let selections = self.status_surface_selections();
+        self.request_status_line_account_usage_if_due(Instant::now(), &selections);
+    }
+
+    pub(crate) fn finish_status_line_account_usage_refresh(
+        &mut self,
+        request_id: u64,
+        result: Result<codex_app_server_protocol::GetAccountTokenUsageResponse, String>,
+    ) -> bool {
+        let completed = self.status_line_account_usage.complete(
+            request_id,
+            result,
+            chrono::Local::now().date_naive(),
+        );
+        if completed {
+            self.frame_requester
+                .schedule_frame_in(ACCOUNT_USAGE_REFRESH_INTERVAL);
+            self.refresh_status_line();
+            self.request_redraw();
+        }
+        completed
     }
 
     pub(crate) fn set_status_line_workspace_headline(

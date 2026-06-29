@@ -719,6 +719,9 @@ impl App {
             AppEvent::RefreshTokenActivity { request_id } => {
                 self.refresh_token_activity(app_server, request_id);
             }
+            AppEvent::RefreshStatusLineAccountUsage { request_id } => {
+                self.refresh_status_line_account_usage(app_server, request_id);
+            }
             AppEvent::RefreshStatusLineWorkspaceHeadline { request_id } => {
                 self.refresh_status_line_workspace_headline(app_server, request_id);
             }
@@ -906,6 +909,13 @@ impl App {
                     // provisional transcript cells have been consolidated.
                     self.insert_pending_usage_output_if_ready(tui);
                 }
+            }
+            AppEvent::StatusLineAccountUsageLoaded { request_id, result } => {
+                if let Err(err) = &result {
+                    tracing::warn!("account/usage/read failed during status-line refresh: {err}");
+                }
+                self.chat_widget
+                    .finish_status_line_account_usage_refresh(request_id, result);
             }
             AppEvent::CommitPendingUsageOutput => {
                 self.insert_pending_usage_output_if_ready(tui);

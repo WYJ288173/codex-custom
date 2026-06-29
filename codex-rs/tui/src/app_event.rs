@@ -344,6 +344,17 @@ pub(crate) enum AppEvent {
         result: Result<GetAccountTokenUsageResponse, String>,
     },
 
+    /// Fetch account-wide token activity for the Claude-style status line.
+    RefreshStatusLineAccountUsage {
+        request_id: u64,
+    },
+
+    /// Result of fetching account-wide token activity for the status line.
+    StatusLineAccountUsageLoaded {
+        request_id: u64,
+        result: Result<GetAccountTokenUsageResponse, String>,
+    },
+
     /// Fetch workspace messages for the status-line headline item.
     RefreshStatusLineWorkspaceHeadline {
         request_id: u64,

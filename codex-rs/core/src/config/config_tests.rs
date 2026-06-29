@@ -879,8 +879,8 @@ status_line_use_colors = false
 
 #[test]
 fn config_toml_status_line_layout_defaults_to_single_line() {
-    let cfg: ConfigToml = toml::from_str("[tui]\n")
-        .expect("TOML deserialization should succeed for TUI config");
+    let cfg: ConfigToml =
+        toml::from_str("[tui]\n").expect("TOML deserialization should succeed for TUI config");
     assert_eq!(
         cfg.tui
             .expect("tui config should deserialize")
