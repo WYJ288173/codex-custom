@@ -58,6 +58,7 @@ use codex_config::types::OtelExporterKind;
 use codex_config::types::SandboxWorkspaceWrite;
 use codex_config::types::SessionPickerViewMode;
 use codex_config::types::SkillsConfig;
+use codex_config::types::StatusLineLayout;
 use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::ToolSuggestDiscoverableType;
 use codex_config::types::Tui;
@@ -824,6 +825,7 @@ fn config_toml_deserializes_model_availability_nux() {
             raw_output_mode: false,
             alternate_screen: AltScreenMode::default(),
             status_line: None,
+            status_line_layout: StatusLineLayout::SingleLine,
             status_line_use_colors: true,
             terminal_title: None,
             theme: None,
@@ -870,6 +872,35 @@ status_line_use_colors = false
         !cfg.tui
             .expect("tui config should deserialize")
             .status_line_use_colors
+    );
+}
+
+#[test]
+fn config_toml_status_line_layout_defaults_to_single_line() {
+    let cfg: ConfigToml = toml::from_str("[tui]\n")
+        .expect("TOML deserialization should succeed for TUI config");
+    assert_eq!(
+        cfg.tui
+            .expect("tui config should deserialize")
+            .status_line_layout,
+        StatusLineLayout::SingleLine
+    );
+}
+
+#[test]
+fn config_toml_deserializes_claude_status_line_layout() {
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[tui]
+status_line_layout = "claude"
+"#,
+    )
+    .expect("TOML deserialization should succeed for TUI config");
+    assert_eq!(
+        cfg.tui
+            .expect("tui config should deserialize")
+            .status_line_layout,
+        StatusLineLayout::Claude
     );
 }
 
@@ -3663,6 +3694,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             raw_output_mode: false,
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
+            status_line_layout: StatusLineLayout::SingleLine,
             status_line_use_colors: true,
             terminal_title: None,
             theme: None,
