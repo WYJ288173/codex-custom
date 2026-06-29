@@ -53,6 +53,7 @@ use std::time::Instant;
 mod action_required_title;
 mod app_link_view;
 mod approval_overlay;
+mod claude_status_line;
 mod mcp_server_elicitation;
 mod multi_select_picker;
 mod request_user_input;
@@ -69,10 +70,13 @@ pub(crate) use app_link_view::AppLinkViewParams;
 pub(crate) use approval_overlay::ApprovalOverlay;
 pub(crate) use approval_overlay::ApprovalRequest;
 pub(crate) use approval_overlay::format_requested_permissions_rule;
+pub(crate) use claude_status_line::ClaudeStatusLineData;
+pub(crate) use claude_status_line::render_claude_status_line;
 pub(crate) use mcp_server_elicitation::McpServerElicitationFormRequest;
 pub(crate) use mcp_server_elicitation::McpServerElicitationOverlay;
 pub(crate) use request_user_input::RequestUserInputOverlay;
 pub(crate) use status_line_style::status_line_from_segments;
+pub(crate) type StatusLineValue = Vec<ratatui::text::Line<'static>>;
 mod bottom_pane_view;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
