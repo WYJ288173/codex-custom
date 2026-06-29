@@ -209,6 +209,7 @@ use super::footer::render_context_right;
 use super::footer::render_footer_from_props;
 use super::footer::render_footer_hint_items;
 use super::footer::render_footer_line;
+use super::footer::render_footer_lines;
 use super::footer::reset_mode_after_activity;
 use super::footer::side_conversation_context_line;
 use super::footer::single_line_footer_layout;
@@ -597,6 +598,7 @@ impl ChatComposer {
                 goal_status_indicator: None,
                 ide_context_active: false,
                 status_line_value: None,
+                status_line_extra_values: Vec::new(),
                 status_line_hyperlink_url: None,
                 status_line_enabled: false,
                 side_conversation_context_label: None,
@@ -3636,10 +3638,29 @@ impl ChatComposer {
         if self.footer.flash_visible() {
             return Some(1);
         }
-        self.footer
+        if let Some(height) = self
+            .footer
             .hint_override
             .as_ref()
             .map(|items| if items.is_empty() { 0 } else { 1 })
+        {
+            return Some(height);
+        }
+        let footer_props = self.footer_props();
+        if uses_passive_footer_status_layout(&footer_props)
+            && !self.footer.status_line_extra_values.is_empty()
+        {
+            return Some(
+                1u16.saturating_add(
+                    self.footer
+                        .status_line_extra_values
+                        .len()
+                        .try_into()
+                        .unwrap_or(u16::MAX),
+                ),
+            );
+        }
+        None
     }
 
     pub(crate) fn sync_popups(&mut self) {
@@ -4101,10 +4122,25 @@ impl ChatComposer {
     }
 
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) -> bool {
-        if self.footer.status_line_value == status_line {
+        if self.footer.status_line_value == status_line
+            && self.footer.status_line_extra_values.is_empty()
+        {
             return false;
         }
         self.footer.status_line_value = status_line;
+        self.footer.status_line_extra_values.clear();
+        true
+    }
+
+    pub(crate) fn set_status_lines(&mut self, status_lines: Vec<Line<'static>>) -> bool {
+        let mut status_lines = status_lines.into_iter();
+        let first = status_lines.next();
+        let extra = status_lines.collect::<Vec<_>>();
+        if self.footer.status_line_value == first && self.footer.status_line_extra_values == extra {
+            return false;
+        }
+        self.footer.status_line_value = first;
+        self.footer.status_line_extra_values = extra;
         true
     }
 
@@ -4400,6 +4436,8 @@ impl ChatComposer {
                     let available_width =
                         hint_rect.width.saturating_sub(FOOTER_INDENT_COLS as u16) as usize;
                     let status_line_active = uses_passive_footer_status_layout(&footer_props);
+                    let multi_line_status_active =
+                        status_line_active && !self.footer.status_line_extra_values.is_empty();
                     let combined_status_line = if status_line_active {
                         passive_footer_status_line(&footer_props)
                     } else {
@@ -4505,6 +4543,8 @@ impl ChatComposer {
                             | FooterMode::ShortcutOverlay
                     ) {
                         false
+                    } else if multi_line_status_active {
+                        false
                     } else {
                         single_line_layout
                             .as_ref()
@@ -4554,7 +4594,22 @@ impl ChatComposer {
                         render_footer_hint_items(hint_rect, buf, items);
                     } else if status_line_active {
                         if let Some(line) = truncated_status_line {
-                            render_footer_line(hint_rect, buf, line);
+                            if multi_line_status_active {
+                                let mut lines = vec![line];
+                                lines.extend(
+                                    self.footer.status_line_extra_values.iter().cloned().map(
+                                        |line| {
+                                            truncate_line_with_ellipsis_if_overflow(
+                                                line,
+                                                available_width,
+                                            )
+                                        },
+                                    ),
+                                );
+                                render_footer_lines(hint_rect, buf, lines);
+                            } else {
+                                render_footer_line(hint_rect, buf, line);
+                            }
                         }
                     } else {
                         render_footer_from_props(
@@ -5257,6 +5312,31 @@ mod tests {
         assert_eq!(
             plugin_mention_foreground_color(&composer),
             Some(Color::Magenta)
+        );
+    }
+
+    #[test]
+    fn multi_line_status_reserves_and_preserves_all_rows() {
+        let (tx, _rx) = unbounded_channel::<AppEvent>();
+        let sender = AppEventSender::new(tx);
+        let mut composer = ChatComposer::new(
+            /*has_input_focus*/ true,
+            sender,
+            /*enhanced_keys_supported*/ true,
+            "Ask Codex to do anything".to_string(),
+            /*disable_paste_burst*/ false,
+        );
+        composer.set_status_line_enabled(/*enabled*/ true);
+        assert!(composer.set_status_lines(vec![
+            Line::from("model"),
+            Line::from("context"),
+            Line::from("directory"),
+        ]));
+
+        assert_eq!(composer.custom_footer_height(), Some(3));
+        assert_eq!(
+            composer.footer.status_line_texts(),
+            vec!["model", "context", "directory"]
         );
     }
 

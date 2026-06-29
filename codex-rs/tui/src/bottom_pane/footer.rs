@@ -246,8 +246,13 @@ pub(crate) fn footer_height(props: &FooterProps) -> u16 {
 
 /// Render a single precomputed footer line.
 pub(crate) fn render_footer_line(area: Rect, buf: &mut Buffer, line: Line<'static>) {
+    render_footer_lines(area, buf, vec![line]);
+}
+
+/// Render precomputed footer lines with the standard footer indentation.
+pub(crate) fn render_footer_lines(area: Rect, buf: &mut Buffer, lines: Vec<Line<'static>>) {
     Paragraph::new(prefix_lines(
-        vec![line],
+        lines,
         " ".repeat(FOOTER_INDENT_COLS).into(),
         " ".repeat(FOOTER_INDENT_COLS).into(),
     ))
