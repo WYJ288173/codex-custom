@@ -215,6 +215,7 @@ impl ChatWidget {
             quit_shortcut_key: None,
             turn_runtime_metrics: RuntimeMetricsSummary::default(),
             last_rendered_width: std::cell::Cell::new(None),
+            status_line_render_width: None,
             feedback,
             current_rollout_path: None,
             current_cwd,
