@@ -169,6 +169,7 @@ mod startup_error;
 mod startup_hooks_review;
 mod status;
 mod status_indicator_widget;
+mod status_line_account_usage;
 mod streaming;
 mod style;
 mod terminal_hyperlinks;
