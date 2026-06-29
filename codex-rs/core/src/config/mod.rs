@@ -44,6 +44,7 @@ use codex_config::types::ModelAvailabilityNuxConfig;
 use codex_config::types::Notice;
 use codex_config::types::OAuthCredentialsStoreMode;
 use codex_config::types::SessionPickerViewMode;
+use codex_config::types::StatusLineLayout;
 use codex_config::types::ToolSuggestConfig;
 use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::ToolSuggestDiscoverable;
@@ -767,6 +768,9 @@ pub struct Config {
     ///
     /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
     pub tui_status_line: Option<Vec<String>>,
+
+    /// Layout used for the configurable TUI status line.
+    pub tui_status_line_layout: StatusLineLayout,
 
     /// Whether to color status line items with colors from the active syntax theme.
     pub tui_status_line_use_colors: bool,
@@ -3993,6 +3997,11 @@ impl Config {
                 .map(|t| t.alternate_screen)
                 .unwrap_or_default(),
             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
+            tui_status_line_layout: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.status_line_layout)
+                .unwrap_or_default(),
             tui_status_line_use_colors: cfg
                 .tui
                 .as_ref()
