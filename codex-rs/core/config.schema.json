@@ -2835,6 +2835,14 @@
       },
       "type": "object"
     },
+    "StatusLineLayout": {
+      "description": "Layout used by the configurable footer status line.",
+      "enum": [
+        "single-line",
+        "claude"
+      ],
+      "type": "string"
+    },
     "ThreadStoreToml": {
       "oneOf": [
         {
@@ -3194,6 +3202,15 @@
             "type": "string"
           },
           "type": "array"
+        },
+        "status_line_layout": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/StatusLineLayout"
+            }
+          ],
+          "default": "single-line",
+          "description": "Selects the footer status-line layout."
         },
         "status_line_use_colors": {
           "default": true,
