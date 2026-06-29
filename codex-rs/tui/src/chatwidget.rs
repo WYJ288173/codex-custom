@@ -707,6 +707,7 @@ pub(crate) struct ChatWidget {
     // Runtime metrics accumulated across delta snapshots for the active turn.
     turn_runtime_metrics: RuntimeMetricsSummary,
     last_rendered_width: std::cell::Cell<Option<u16>>,
+    status_line_render_width: Option<u16>,
     // Feedback sink for /feedback
     feedback: codex_feedback::CodexFeedback,
     // Current session rollout path (if known)
@@ -1220,6 +1221,12 @@ impl ChatWidget {
         }
         self.refresh_status_line_if_workspace_headline_due();
         self.refresh_status_line_if_account_usage_due();
+        if self.config.tui_status_line_layout == codex_config::types::StatusLineLayout::Claude
+            && self.status_line_render_width != self.last_rendered_width.get()
+        {
+            self.status_line_render_width = self.last_rendered_width.get();
+            self.refresh_status_line();
+        }
     }
 
     fn flush_active_cell(&mut self) {
