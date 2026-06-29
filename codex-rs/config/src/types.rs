@@ -700,6 +700,15 @@ pub struct ModelAvailabilityNuxConfig {
 /// Fallback resize-reflow row cap when Codex cannot identify a terminal-specific scrollback size.
 pub const DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS: usize = 1_000;
 
+/// Layout used by the configurable footer status line.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum StatusLineLayout {
+    #[default]
+    SingleLine,
+    Claude,
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -741,6 +750,10 @@ pub struct Tui {
     /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
     #[serde(default)]
     pub status_line: Option<Vec<String>>,
+
+    /// Selects the footer status-line layout.
+    #[serde(default)]
+    pub status_line_layout: StatusLineLayout,
 
     /// Color status line items with colors derived from the active syntax theme.
     /// Defaults to `true`.
