@@ -4541,9 +4541,8 @@ impl ChatComposer {
                             | FooterMode::HistorySearch
                             | FooterMode::QuitShortcutReminder
                             | FooterMode::ShortcutOverlay
-                    ) {
-                        false
-                    } else if multi_line_status_active {
+                    ) || multi_line_status_active
+                    {
                         false
                     } else {
                         single_line_layout
@@ -5337,6 +5336,20 @@ mod tests {
         assert_eq!(
             composer.footer.status_line_texts(),
             vec!["model", "context", "directory"]
+        );
+
+        snapshot_composer_state_with_width(
+            "multi_line_status_footer",
+            /*width*/ 100,
+            /*enhanced_keys_supported*/ true,
+            |composer| {
+                composer.set_status_line_enabled(/*enabled*/ true);
+                assert!(composer.set_status_lines(vec![
+                    Line::from("model"),
+                    Line::from("context"),
+                    Line::from("directory"),
+                ]));
+            },
         );
     }
 

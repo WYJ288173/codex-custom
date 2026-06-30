@@ -73,7 +73,7 @@ pub(crate) fn summarize_account_usage(
     };
 
     let week_start = today - Duration::days(i64::from(today.weekday().num_days_from_monday()));
-    let month_start = today.with_day(1).expect("day one exists");
+    let month_start = today - Duration::days(i64::from(today.day0()));
     let parsed = buckets.iter().filter_map(|bucket| {
         NaiveDate::parse_from_str(&bucket.start_date, "%Y-%m-%d")
             .ok()
