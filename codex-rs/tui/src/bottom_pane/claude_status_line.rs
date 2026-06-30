@@ -380,4 +380,19 @@ mod tests {
                 .any(|span| span.style.fg == Some(TOTAL))
         );
     }
+
+    #[test]
+    fn narrow_layout_snapshot() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        use ratatui::widgets::Paragraph;
+
+        let lines = render_claude_status_line(&data(), 100);
+        let mut terminal = Terminal::new(TestBackend::new(100, 3)).expect("terminal");
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new(lines), frame.area()))
+            .expect("render status line");
+
+        insta::assert_snapshot!("claude_status_line_narrow", terminal.backend());
+    }
 }
