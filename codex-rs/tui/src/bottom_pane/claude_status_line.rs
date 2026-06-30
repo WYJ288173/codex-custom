@@ -1,4 +1,5 @@
 use ratatui::style::Color;
+use ratatui::style::Modifier;
 use ratatui::style::Style;
 use ratatui::text::Line;
 use ratatui::text::Span;
@@ -45,10 +46,7 @@ pub(crate) fn render_claude_status_line(
         },
     );
 
-    let mut identity = vec![Span::styled(
-        model_and_reasoning(data),
-        Style::default().fg(MODEL),
-    )];
+    let mut identity = model_and_reasoning_spans(data);
     push_separator(&mut identity);
     identity.push(Span::styled(path, Style::default().fg(PATH)));
     if let Some(branch) = data.git_branch.as_ref().filter(|branch| !branch.is_empty()) {
@@ -82,11 +80,18 @@ pub(crate) fn render_claude_status_line(
         .collect()
 }
 
-fn model_and_reasoning(data: &ClaudeStatusLineData) -> String {
-    match data.reasoning.as_deref().filter(|value| !value.is_empty()) {
-        Some(reasoning) => format!("{} · {reasoning}", data.model),
-        None => data.model.clone(),
+fn model_and_reasoning_spans(data: &ClaudeStatusLineData) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        data.model.clone(),
+        Style::default().fg(MODEL).add_modifier(Modifier::BOLD),
+    )];
+    if let Some(reasoning) = data.reasoning.as_deref().filter(|value| !value.is_empty()) {
+        spans.push(Span::styled(
+            format!(" · {reasoning}"),
+            Style::default().fg(MODEL),
+        ));
     }
+    spans
 }
 
 fn context_spans(percent: Option<i64>) -> Vec<Span<'static>> {
@@ -358,8 +363,23 @@ mod tests {
     #[test]
     fn semantic_fields_use_approved_colors() {
         let lines = render_claude_status_line(&data(), 180);
+        assert_eq!(lines[0].spans[0].content, "GPT-5.4");
         assert_eq!(lines[0].spans[0].style.fg, Some(MODEL));
-        assert_eq!(lines[0].spans[2].style.fg, Some(PATH));
+        assert!(
+            lines[0].spans[0]
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+        assert_eq!(lines[0].spans[1].content, " · high");
+        assert_eq!(lines[0].spans[1].style.fg, Some(MODEL));
+        assert!(
+            !lines[0].spans[1]
+                .style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
+        assert_eq!(lines[0].spans[3].style.fg, Some(PATH));
         assert_eq!(lines[1].spans[0].style.fg, Some(CONTEXT));
         assert!(
             lines[1]
