@@ -126,19 +126,26 @@ impl App {
 
     pub(super) fn refresh_status_line_account_usage(
         &mut self,
-        app_server: &AppServerSession,
+        _app_server: &AppServerSession,
         request_id: u64,
     ) {
-        let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
+        let codex_home = self.config.codex_home.clone();
         tokio::spawn(async move {
             let result = tokio::time::timeout(
                 TOKEN_ACTIVITY_FETCH_TIMEOUT,
-                fetch_account_token_activity(request_handle),
+                tokio::task::spawn_blocking(move || {
+                    crate::status_line_account_usage::summarize_local_rollout_usage(
+                        codex_home.as_path(),
+                    )
+                    .map_err(|err| err.to_string())
+                }),
             )
             .await
             .map_err(|_| "account/usage/read timed out in TUI".to_string())
-            .and_then(|result| result.map_err(|err| err.to_string()));
+            .and_then(|join_result| {
+                join_result.map_err(|err| format!("account usage scan failed: {err}"))?
+            });
             app_event_tx.send(AppEvent::StatusLineAccountUsageLoaded { request_id, result });
         });
     }

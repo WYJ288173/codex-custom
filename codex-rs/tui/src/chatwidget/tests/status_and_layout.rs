@@ -684,6 +684,31 @@ async fn status_line_legacy_limit_items_prefer_matching_windows() {
 }
 
 #[tokio::test]
+async fn status_line_five_hour_item_includes_reset_time_when_available() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
+        limit_id: None,
+        limit_name: None,
+        primary: Some(RateLimitWindow {
+            used_percent: 40,
+            window_duration_mins: Some(5 * 60),
+            resets_at: Some(chrono::Utc::now().timestamp() + 600),
+        }),
+        secondary: None,
+        credits: None,
+        individual_limit: None,
+        plan_type: None,
+        rate_limit_reached_type: None,
+    }));
+
+    let value = chat
+        .status_line_value_for_item(crate::bottom_pane::StatusLineItem::FiveHourLimit)
+        .expect("5h limit value");
+    assert!(value.starts_with("5h 60% left · resets "), "{value}");
+}
+
+#[tokio::test]
 async fn status_line_shows_secondary_non_weekly_when_primary_is_weekly() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
 
