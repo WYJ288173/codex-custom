@@ -3,5 +3,5 @@ source: tui/src/bottom_pane/claude_status_line.rs
 expression: terminal.backend()
 ---
 "GPT-5.4 · high │ ~/d/codex │ main                                                                   "
-"Ctx 31% ▓▓▓░░░░░░░ │ Session ↑842K ↓96K │ 5h 18% · Week limit 42%                                   "
+"Ctx 31% ▓▓▓░░░░░░░ │ Session ↑842K ↓96K │ 5h 18% reset 03:25 · Week limit 42%                       "
 "Today 1.2M │ Week 4.8M │ Month 18.6M │ Total 42.1M                                                  "

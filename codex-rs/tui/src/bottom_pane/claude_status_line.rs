@@ -306,7 +306,7 @@ mod tests {
                 monthly: Some(18_600_000),
                 total: Some(42_100_000),
             }),
-            five_hour_limit: Some("5h 18%".to_string()),
+            five_hour_limit: Some("5h 18% reset 03:25".to_string()),
             weekly_limit: Some("Limit/week 42%".to_string()),
         }
     }
@@ -324,7 +324,13 @@ mod tests {
         assert_eq!(lines.len(), 2);
         assert_eq!(text(&lines[0]), "GPT-5.4 · high │ ~/developer/codex │ main");
         let metrics = text(&lines[1]);
-        for expected in ["Ctx 31%", "Session ↑842K ↓96K", "Today 1.2M", "Total 42.1M"] {
+        for expected in [
+            "Ctx 31%",
+            "Session ↑842K ↓96K",
+            "Today 1.2M",
+            "Total 42.1M",
+            "5h 18% reset 03:25",
+        ] {
             assert!(metrics.contains(expected), "missing {expected}: {metrics}");
         }
     }

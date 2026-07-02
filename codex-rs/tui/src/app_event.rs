@@ -42,6 +42,7 @@ use crate::bottom_pane::StatusLineItem;
 use crate::bottom_pane::TerminalTitleItem;
 use crate::chatwidget::UserMessage;
 use crate::goal_files::GoalDraft;
+use crate::status_line_account_usage::AccountUsageSummary;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::types::ApprovalsReviewer;
 use codex_features::Feature;
@@ -352,7 +353,7 @@ pub(crate) enum AppEvent {
     /// Result of fetching account-wide token activity for the status line.
     StatusLineAccountUsageLoaded {
         request_id: u64,
-        result: Result<GetAccountTokenUsageResponse, String>,
+        result: Result<AccountUsageSummary, String>,
     },
 
     /// Fetch workspace messages for the status-line headline item.
