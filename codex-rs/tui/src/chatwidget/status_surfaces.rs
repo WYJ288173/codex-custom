@@ -13,6 +13,8 @@ use crate::chatwidget::rate_limits::get_limits_duration;
 use crate::legacy_core::config::Config;
 use crate::status::format_tokens_compact;
 use crate::status_line_account_usage::REFRESH_INTERVAL as ACCOUNT_USAGE_REFRESH_INTERVAL;
+use chrono::Duration as ChronoDuration;
+use chrono::Local;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::ConfigLayerSource;
 use codex_config::types::StatusLineLayout;
@@ -229,9 +231,11 @@ impl ChatWidget {
     fn claude_status_line_data(&self) -> ClaudeStatusLineData {
         let usage = self.status_line_total_usage();
         let rate_limits = self.rate_limit_snapshots_by_limit_id.get("codex");
-        let five_hour_limit = rate_limits
-            .and_then(five_hour_status_window)
-            .map(|(window, _)| format!("5h {:.0}%", window.used_percent.clamp(0.0, 100.0)));
+        let now = Local::now();
+        let five_hour_limit = rate_limits.and_then(|snapshot| {
+            five_hour_status_window(snapshot)
+                .map(|(window, _)| format_five_hour_limit(snapshot, window, now))
+        });
         let weekly_limit = rate_limits
             .and_then(weekly_status_window)
             .map(|(window, _)| format!("Limit/week {:.0}%", window.used_percent.clamp(0.0, 100.0)));
@@ -689,13 +693,9 @@ impl ChatWidget {
     pub(crate) fn finish_status_line_account_usage_refresh(
         &mut self,
         request_id: u64,
-        result: Result<codex_app_server_protocol::GetAccountTokenUsageResponse, String>,
+        result: Result<crate::status_line_account_usage::AccountUsageSummary, String>,
     ) -> bool {
-        let completed = self.status_line_account_usage.complete(
-            request_id,
-            result,
-            chrono::Local::now().date_naive(),
-        );
+        let completed = self.status_line_account_usage.complete(request_id, result);
         if completed {
             self.frame_requester
                 .schedule_frame_in(ACCOUNT_USAGE_REFRESH_INTERVAL);
@@ -794,11 +794,12 @@ impl ChatWidget {
                 .status_line_context_used_percent()
                 .map(|used| format!("Context {used}% used")),
             StatusLineItem::FiveHourLimit => {
-                let (window, is_secondary) = self
-                    .rate_limit_snapshots_by_limit_id
-                    .get("codex")
-                    .and_then(five_hour_status_window)?;
+                let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex")?;
+                let (window, is_secondary) = five_hour_status_window(snapshot)?;
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
+                if rate_limit_window_expired(snapshot, window, Local::now()) {
+                    return Some(format!("{label} 100% left"));
+                }
                 self.status_line_limit_display(Some(window), &label)
             }
             StatusLineItem::WeeklyLimit => {
@@ -1099,6 +1100,33 @@ fn five_hour_status_window(
         .or_else(|| non_weekly_secondary_window_when_primary_is_weekly(snapshot))
 }
 
+fn rate_limit_window_expired(
+    snapshot: &RateLimitSnapshotDisplay,
+    window: &RateLimitWindowDisplay,
+    now: chrono::DateTime<Local>,
+) -> bool {
+    let Some(window_minutes) = window.window_minutes else {
+        return false;
+    };
+    now.signed_duration_since(snapshot.captured_at) >= ChronoDuration::minutes(window_minutes)
+}
+
+fn format_five_hour_limit(
+    snapshot: &RateLimitSnapshotDisplay,
+    window: &RateLimitWindowDisplay,
+    now: chrono::DateTime<Local>,
+) -> String {
+    if rate_limit_window_expired(snapshot, window, now) {
+        return "5h 0%".to_string();
+    }
+
+    let value = format!("5h {:.0}%", window.used_percent.clamp(0.0, 100.0));
+    match window.resets_at.as_deref() {
+        Some(reset) => format!("{value} reset {reset}"),
+        None => value,
+    }
+}
+
 fn weekly_status_window(
     snapshot: &RateLimitSnapshotDisplay,
 ) -> Option<(&RateLimitWindowDisplay, bool)> {
@@ -1175,6 +1203,56 @@ fn non_weekly_secondary_window_when_primary_is_weekly(
         None
     } else {
         Some((secondary, true))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(
+        captured_at: chrono::DateTime<Local>,
+        window: RateLimitWindowDisplay,
+    ) -> RateLimitSnapshotDisplay {
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at,
+            primary: Some(window),
+            secondary: None,
+            credits: None,
+            individual_limit: None,
+        }
+    }
+
+    #[test]
+    fn five_hour_claude_status_includes_reset_time() {
+        let now = Local::now();
+        let window = RateLimitWindowDisplay {
+            used_percent: 18.0,
+            resets_at: Some("03:25".to_string()),
+            window_minutes: Some(300),
+        };
+        let snapshot = snapshot(now, window);
+        let (window, _) = five_hour_status_window(&snapshot).expect("5h window");
+
+        assert_eq!(
+            format_five_hour_limit(&snapshot, window, now),
+            "5h 18% reset 03:25"
+        );
+    }
+
+    #[test]
+    fn expired_five_hour_claude_status_resets_to_zero_used() {
+        let now = Local::now();
+        let window = RateLimitWindowDisplay {
+            used_percent: 87.0,
+            resets_at: Some("03:25".to_string()),
+            window_minutes: Some(300),
+        };
+        let snapshot = snapshot(now - ChronoDuration::minutes(301), window);
+        let (window, _) = five_hour_status_window(&snapshot).expect("5h window");
+
+        assert_eq!(format_five_hour_limit(&snapshot, window, now), "5h 0%");
     }
 }
 
