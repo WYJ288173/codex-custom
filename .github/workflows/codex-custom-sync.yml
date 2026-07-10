@@ -31,7 +31,11 @@ jobs:
   sync-build:
     name: Sync with upstream and build custom CLI
     runs-on: macos-latest
-    timeout-minutes: 90
+    # macos-latest is substantially slower than the macos-15-xlarge runners
+    # used by upstream releases. This job also validates both custom crates
+    # before compiling the release profile, so allow enough time for a cold
+    # standard-runner build.
+    timeout-minutes: 180
     defaults:
       run:
         shell: bash
