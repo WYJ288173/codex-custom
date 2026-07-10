@@ -53,6 +53,12 @@ Custom Codex runs as:
 codex-custom
 ```
 
+For installing a specific release tag, rolling back to an older version, or adding more release targets, see:
+
+```text
+docs/codex-custom-release-install.md
+```
+
 ## Local Fallback
 
 When GitHub Actions is unavailable, build locally:
