@@ -3427,7 +3427,7 @@ mod tests {
     async fn mcp_check_warns_for_optional_http_reachability() {
         let optional_server: McpServerConfig = toml::from_str(
             r#"
-                url = "http://127.0.0.1:9/mcp"
+                url = "http://[::1/mcp"
             "#,
         )
         .expect("should deserialize optional MCP config");
