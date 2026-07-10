@@ -66,6 +66,8 @@ You can also use Codex with an API key, but this requires [additional setup](htt
 - [**Codex Documentation**](https://developers.openai.com/codex)
 - [**Contributing**](./docs/contributing.md)
 - [**Installing & building**](./docs/install.md)
+- [**codex-custom update flow**](./docs/codex-custom-update.md)
+- [**codex-custom release install guide**](./docs/codex-custom-release-install.md)
 - [**Open source fund**](./docs/open-source-fund.md)
 
 This repository is licensed under the [Apache-2.0 License](LICENSE).
