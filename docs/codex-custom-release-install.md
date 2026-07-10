@@ -209,4 +209,3 @@ If `codex-custom` is not found, add the install directory to `PATH`:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
-
