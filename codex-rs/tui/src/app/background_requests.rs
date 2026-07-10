@@ -150,25 +150,6 @@ impl App {
         });
     }
 
-    pub(super) fn refresh_rate_limit_reset_credits(
-        &mut self,
-        app_server: &AppServerSession,
-        request_id: u64,
-    ) {
-        let request_handle = app_server.request_handle();
-        let app_event_tx = self.app_event_tx.clone();
-        tokio::spawn(async move {
-            let result = tokio::time::timeout(
-                RATE_LIMIT_RESET_REQUEST_TIMEOUT,
-                fetch_account_rate_limits(request_handle),
-            )
-            .await
-            .map_err(|_| "account/rateLimits/read timed out in TUI".to_string())
-            .and_then(|result| result.map_err(|err| err.to_string()));
-            app_event_tx.send(AppEvent::RateLimitResetCreditsLoaded { request_id, result });
-        });
-    }
-
     pub(super) fn consume_rate_limit_reset_credit(
         &mut self,
         app_server: &AppServerSession,
