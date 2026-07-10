@@ -30,7 +30,7 @@ env:
 jobs:
   sync-build:
     name: Sync with upstream and build custom CLI
-    runs-on: macos-15-xlarge
+    runs-on: macos-latest
     timeout-minutes: 90
     defaults:
       run:
