@@ -18,6 +18,7 @@ Environment overrides:
   CODEX_CUSTOM_RELEASE    Release tag or latest, default latest
   CODEX_CUSTOM_TARGET     Asset target, default aarch64-apple-darwin
   CODEX_CUSTOM_BIN_DIR    Install dir, default ~/.local/bin
+  GH_TOKEN/GITHUB_TOKEN   Optional GitHub token for authenticated API requests
 EOF
 }
 
@@ -70,7 +71,24 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/codex-custom-install.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 
 metadata="${tmp_dir}/release.json"
-curl -fsSL "$api_url" -o "$metadata"
+curl_args=(
+  --fail
+  --silent
+  --show-error
+  --location
+  --retry 5
+  --retry-delay 2
+  --retry-all-errors
+)
+api_curl_args=("${curl_args[@]}")
+github_token="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [[ -n "$github_token" ]]; then
+  api_curl_args+=(
+    --header "Authorization: Bearer ${github_token}"
+    --header "Accept: application/vnd.github+json"
+  )
+fi
+curl "${api_curl_args[@]}" "$api_url" -o "$metadata"
 
 asset_urls="$(
   python3 - "$metadata" "$target" <<'PY'
@@ -99,8 +117,8 @@ checksum_url="$(printf '%s\n' "$asset_urls" | sed -n '2p')"
 archive="${tmp_dir}/codex-custom.tar.gz"
 checksum="${tmp_dir}/codex-custom.tar.gz.sha256"
 
-curl -fsSL "$archive_url" -o "$archive"
-curl -fsSL "$checksum_url" -o "$checksum"
+curl "${curl_args[@]}" "$archive_url" -o "$archive"
+curl "${curl_args[@]}" "$checksum_url" -o "$checksum"
 
 expected="$(awk '{print $1}' "$checksum")"
 actual="$(shasum -a 256 "$archive" | awk '{print $1}')"
