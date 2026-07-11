@@ -125,6 +125,7 @@ jobs:
           gh release create "$RELEASE_NAME" \
             "$ARCHIVE" \
             "$CHECKSUM" \
+            --repo "$GITHUB_REPOSITORY" \
             --target "$CUSTOM_BRANCH" \
             --title "$RELEASE_NAME" \
             --notes "Codex custom build rebased onto upstream/main at $(git rev-parse --short=12 upstream/main)." \
