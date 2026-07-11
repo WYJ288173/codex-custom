@@ -55,10 +55,54 @@ jobs:
           git fetch upstream main
           git rebase upstream/main
 
+      - name: Verify custom sync contract
+        run: python3 -m unittest scripts/test_codex_custom_sync.py
+
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
           targets: ${{ env.TARGET }}
           components: rustfmt
+
+      - name: Resolve custom version
+        id: custom_version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_tag="$(gh api repos/openai/codex/releases/latest --jq .tag_name)"
+          if [[ ! "$upstream_tag" =~ ^rust-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "Unsupported upstream Codex release tag: ${upstream_tag}" >&2
+            exit 1
+          fi
+          upstream_version="${BASH_REMATCH[1]}"
+          custom_version="${upstream_version}-custom.1"
+          python3 - "$custom_version" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          cargo_toml = Path("codex-rs/Cargo.toml")
+          text = cargo_toml.read_text()
+          updated, count = re.subn(
+              r'(?m)^(\[workspace\.package\]\nversion = ")[^"]+(")',
+              rf"\g<1>{version}\2",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("workspace package version not found")
+          cargo_toml.write_text(updated)
+          PY
+          {
+            echo "upstream_tag=${upstream_tag}"
+            echo "upstream_version=${upstream_version}"
+            echo "custom_version=${custom_version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update workspace lockfile version
+        working-directory: codex-rs
+        run: cargo update --workspace
 
       - name: Validate focused custom surface
         working-directory: codex-rs
@@ -81,7 +125,7 @@ jobs:
         run: |
           set -euo pipefail
           short_sha="$(git rev-parse --short=12 HEAD)"
-          version="$(sed -n 's/^version *= *"\([^"]*\)".*/\1/p' codex-rs/Cargo.toml | head -n 1)"
+          version="${{ steps.custom_version.outputs.custom_version }}"
           release_name="codex-custom-${version}-${short_sha}"
           package_dir="${RUNNER_TEMP}/${release_name}"
           mkdir -p "$package_dir"
@@ -128,5 +172,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$CUSTOM_BRANCH" \
             --title "$RELEASE_NAME" \
-            --notes "Codex custom build rebased onto upstream/main at $(git rev-parse --short=12 upstream/main)." \
+            --notes "Codex custom build based on ${{ steps.custom_version.outputs.upstream_tag }} and rebased onto upstream/main at $(git rev-parse --short=12 upstream/main)." \
             --prerelease
