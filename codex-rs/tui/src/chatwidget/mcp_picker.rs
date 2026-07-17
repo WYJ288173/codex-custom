@@ -6,7 +6,6 @@ use crate::bottom_pane::SelectionRowDisplay;
 use crate::bottom_pane::SelectionViewParams;
 use codex_app_server_protocol::McpAuthStatus;
 use codex_app_server_protocol::McpServerStatus;
-use ratatui::style::Color;
 use ratatui::style::Stylize;
 use ratatui::text::Line;
 
@@ -65,10 +64,9 @@ fn list_params(mut statuses: Vec<McpServerStatus>) -> SelectionViewParams {
             let tool_count = tool_count_label(status.tools.len());
             let (state_prefix, description) = match connection_state(&status) {
                 McpConnectionState::Connected => ("✓ ".green(), tool_count),
-                McpConnectionState::NeedsAuthentication => (
-                    "! ".fg(Color::Yellow),
-                    format!("Needs authentication · {tool_count}"),
-                ),
+                McpConnectionState::NeedsAuthentication => {
+                    ("! ".cyan(), format!("Needs authentication · {tool_count}"))
+                }
                 McpConnectionState::Unavailable => {
                     ("× ".red(), format!("Unavailable · {tool_count}"))
                 }
