@@ -699,6 +699,7 @@ async fn status_line_five_hour_item_includes_reset_time_when_available() {
         credits: None,
         individual_limit: None,
         plan_type: None,
+        spend_control_reached: None,
         rate_limit_reached_type: None,
     }));
 
