@@ -772,6 +772,16 @@ pub(crate) enum AppEvent {
         focus_server: Option<String>,
     },
 
+    /// Open the detail view for one MCP server from the interactive picker.
+    OpenMcpServerDetail {
+        server: McpServerStatus,
+    },
+
+    /// Open the informational tool list for one MCP server.
+    OpenMcpServerTools {
+        server: McpServerStatus,
+    },
+
     /// Result of the startup skills refresh that runs after the first frame is scheduled.
     ///
     /// This event is startup-only. Interactive skills refreshes are handled synchronously through the app

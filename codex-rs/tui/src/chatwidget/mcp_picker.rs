@@ -10,9 +10,7 @@ use ratatui::style::Stylize;
 use ratatui::text::Line;
 
 pub(super) const MCP_LIST_VIEW_ID: &str = "mcp-list";
-#[allow(dead_code)]
 pub(super) const MCP_DETAIL_VIEW_ID: &str = "mcp-detail";
-#[allow(dead_code)]
 pub(super) const MCP_TOOLS_VIEW_ID: &str = "mcp-tools";
 #[allow(dead_code)]
 pub(super) const MCP_OAUTH_VIEW_ID: &str = "mcp-oauth";
@@ -39,6 +37,14 @@ fn tool_count_label(count: usize) -> String {
         "1 tool".to_string()
     } else {
         format!("{count} tools")
+    }
+}
+
+fn oauth_action(auth_status: &McpAuthStatus) -> Option<&'static str> {
+    match auth_status {
+        McpAuthStatus::NotLoggedIn => Some("Authenticate"),
+        McpAuthStatus::OAuth => Some("Re-authenticate"),
+        McpAuthStatus::BearerToken | McpAuthStatus::Unsupported => None,
     }
 }
 
@@ -71,10 +77,16 @@ fn list_params(mut statuses: Vec<McpServerStatus>) -> SelectionViewParams {
                     ("× ".red(), format!("Unavailable · {tool_count}"))
                 }
             };
+            let name = status.name.clone();
             SelectionItem {
-                name: status.name,
+                name,
                 name_prefix_spans: vec![state_prefix],
                 description: Some(description),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenMcpServerDetail {
+                        server: status.clone(),
+                    });
+                })],
                 ..Default::default()
             }
         })
@@ -84,7 +96,87 @@ fn list_params(mut statuses: Vec<McpServerStatus>) -> SelectionViewParams {
         view_id: Some(MCP_LIST_VIEW_ID),
         title: Some("MCP servers".to_string()),
         items,
-        footer_hint: Some(Line::from("↑↓ Navigate  Esc Close")),
+        footer_hint: Some(Line::from("↑↓ Navigate  Enter Details  Esc Close")),
+        col_width_mode: ColumnWidthMode::AutoAllRows,
+        row_display: SelectionRowDisplay::SingleLine,
+        ..Default::default()
+    }
+}
+
+fn detail_params(server: McpServerStatus) -> SelectionViewParams {
+    let tool_count = server.tools.len();
+    let state_label = match connection_state(&server) {
+        McpConnectionState::Connected => "Connected",
+        McpConnectionState::NeedsAuthentication => "Needs authentication",
+        McpConnectionState::Unavailable => "Unavailable",
+    };
+    let auth_label = match server.auth_status {
+        McpAuthStatus::Unsupported => "Unsupported",
+        McpAuthStatus::NotLoggedIn => "Not logged in",
+        McpAuthStatus::BearerToken => "Bearer token",
+        McpAuthStatus::OAuth => "OAuth",
+    };
+    let mut items = Vec::new();
+    if tool_count > 0 {
+        let tools_server = server.clone();
+        items.push(SelectionItem {
+            name: format!("View tools ({tool_count})"),
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::OpenMcpServerTools {
+                    server: tools_server.clone(),
+                });
+            })],
+            ..Default::default()
+        });
+    }
+    if let Some(action) = oauth_action(&server.auth_status) {
+        items.push(SelectionItem {
+            name: action.to_string(),
+            is_disabled: true,
+            ..Default::default()
+        });
+    }
+
+    SelectionViewParams {
+        view_id: Some(MCP_DETAIL_VIEW_ID),
+        title: Some(format!("MCP server · {}", server.name)),
+        subtitle: Some(format!(
+            "State: {} · Authentication: {} · {}",
+            state_label,
+            auth_label,
+            tool_count_label(tool_count),
+        )),
+        items,
+        footer_hint: Some(if tool_count > 0 {
+            Line::from("↑↓ Navigate  Enter Select  Esc Back")
+        } else {
+            Line::from("Esc Back")
+        }),
+        col_width_mode: ColumnWidthMode::AutoAllRows,
+        row_display: SelectionRowDisplay::SingleLine,
+        ..Default::default()
+    }
+}
+
+fn tools_params(server: McpServerStatus) -> SelectionViewParams {
+    let mut tool_names = server.tools.into_keys().collect::<Vec<_>>();
+    tool_names.sort();
+    let tool_count = tool_names.len();
+    let items = tool_names
+        .into_iter()
+        .map(|name| SelectionItem {
+            name,
+            is_disabled: true,
+            ..Default::default()
+        })
+        .collect();
+
+    SelectionViewParams {
+        view_id: Some(MCP_TOOLS_VIEW_ID),
+        title: Some(format!("MCP tools · {}", server.name)),
+        subtitle: Some(tool_count_label(tool_count)),
+        items,
+        footer_hint: Some(Line::from("Esc Back")),
         col_width_mode: ColumnWidthMode::AutoAllRows,
         row_display: SelectionRowDisplay::SingleLine,
         ..Default::default()
@@ -159,5 +251,13 @@ impl ChatWidget {
         let _ = self
             .bottom_pane
             .replace_selection_view_if_present(MCP_LIST_VIEW_ID, params);
+    }
+
+    pub(crate) fn open_mcp_server_detail(&mut self, server: McpServerStatus) {
+        self.bottom_pane.show_selection_view(detail_params(server));
+    }
+
+    pub(crate) fn open_mcp_server_tools(&mut self, server: McpServerStatus) {
+        self.bottom_pane.show_selection_view(tools_params(server));
     }
 }

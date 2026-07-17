@@ -979,6 +979,12 @@ impl App {
             } => {
                 self.handle_mcp_picker_inventory_result(result, thread_id, focus_server);
             }
+            AppEvent::OpenMcpServerDetail { server } => {
+                self.chat_widget.open_mcp_server_detail(server);
+            }
+            AppEvent::OpenMcpServerTools { server } => {
+                self.chat_widget.open_mcp_server_tools(server);
+            }
             AppEvent::SkillsListLoaded { result } => {
                 self.handle_skills_list_result(
                     result.map_err(|err| color_eyre::eyre::eyre!(err)),
