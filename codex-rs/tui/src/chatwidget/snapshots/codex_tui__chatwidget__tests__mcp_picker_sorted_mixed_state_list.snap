@@ -1,6 +1,6 @@
 ---
 source: tui/src/chatwidget/tests/mcp_picker.rs
-assertion_line: 100
+assertion_line: 104
 expression: rendered
 ---
   MCP servers
@@ -9,4 +9,4 @@ expression: rendered
   2. ! middle-auth       Needs authentication · 1 tool
   3. × zeta-unavailable  Unavailable · 1 tool
 
-  ↑↓ Navigate  Esc Close
+  ↑↓ Navigate  Enter Details  Esc Close

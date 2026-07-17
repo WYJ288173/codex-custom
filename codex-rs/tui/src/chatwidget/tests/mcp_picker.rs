@@ -70,6 +70,10 @@ fn mixed_statuses() -> Vec<McpServerStatus> {
     ]
 }
 
+fn press(chat: &mut ChatWidget, code: KeyCode) {
+    chat.handle_key_event(KeyEvent::new(code, KeyModifiers::NONE));
+}
+
 #[tokio::test]
 async fn mcp_picker_loading_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
@@ -161,4 +165,145 @@ async fn mcp_picker_ignores_inventory_loaded_after_list_is_closed() {
     chat.on_mcp_picker_inventory_loaded(Ok(mixed_statuses()), /*focus_server*/ None);
 
     assert!(chat.bottom_pane.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn mcp_picker_down_and_enter_opens_the_second_sorted_server() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let expected = status(
+        "middle-auth",
+        McpAuthStatus::NotLoggedIn,
+        true,
+        &["auth_only_secret_tool"],
+    );
+    chat.open_mcp_picker_loading();
+    chat.on_mcp_picker_inventory_loaded(Ok(mixed_statuses()), /*focus_server*/ None);
+
+    press(&mut chat, KeyCode::Down);
+    press(&mut chat, KeyCode::Enter);
+
+    match rx.try_recv() {
+        Ok(AppEvent::OpenMcpServerDetail { server }) => assert_eq!(server, expected),
+        other => panic!("expected OpenMcpServerDetail event, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn mcp_picker_not_logged_in_server_detail_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status(
+        "middle-auth",
+        McpAuthStatus::NotLoggedIn,
+        true,
+        &["bravo_tool", "alpha_tool"],
+    );
+    chat.open_mcp_picker_loading();
+
+    chat.open_mcp_server_detail(server);
+
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_DETAIL_VIEW_ID)
+    );
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(rendered.contains("State: Needs authentication"));
+    assert!(rendered.contains("Authentication: Not logged in"));
+    assert!(rendered.contains("2 tools"));
+    assert!(rendered.contains("View tools (2)"));
+    assert!(rendered.contains("Authenticate"));
+    assert_chatwidget_snapshot!("mcp_picker_not_logged_in_server_detail", rendered);
+}
+
+#[tokio::test]
+async fn mcp_picker_oauth_detail_reauthenticate_is_presentational() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.open_mcp_server_detail(status("oauth-server", McpAuthStatus::OAuth, true, &[]));
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    let rendered_lower = rendered.to_lowercase();
+    assert!(rendered.contains("Re-authenticate"));
+    assert!(!rendered_lower.contains("clear authentication"));
+    assert!(!rendered_lower.contains("logout"));
+
+    press(&mut chat, KeyCode::Enter);
+
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_DETAIL_VIEW_ID)
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn mcp_picker_non_oauth_auth_statuses_have_no_oauth_action() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+
+    for (auth_status, auth_label) in [
+        (McpAuthStatus::BearerToken, "Bearer token"),
+        (McpAuthStatus::Unsupported, "Unsupported"),
+    ] {
+        chat.open_mcp_server_detail(status("server", auth_status, true, &[]));
+
+        let rendered = render_bottom_popup(&chat, /*width*/ 80);
+        assert!(rendered.contains(&format!("Authentication: {auth_label}")));
+        assert!(!rendered.contains("Authenticate"));
+        assert!(!rendered.contains("Re-authenticate"));
+    }
+}
+
+#[tokio::test]
+async fn mcp_picker_view_tools_opens_sorted_informational_list_and_esc_navigates_back() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status(
+        "alpha-connected",
+        McpAuthStatus::OAuth,
+        true,
+        &["zulu_tool", "alpha_tool", "middle_tool"],
+    );
+    chat.open_mcp_picker_loading();
+    chat.on_mcp_picker_inventory_loaded(Ok(vec![server.clone()]), /*focus_server*/ None);
+    chat.open_mcp_server_detail(server.clone());
+
+    press(&mut chat, KeyCode::Enter);
+    let server = match rx.try_recv() {
+        Ok(AppEvent::OpenMcpServerTools { server: actual }) => {
+            assert_eq!(actual, server);
+            actual
+        }
+        other => panic!("expected OpenMcpServerTools event, got {other:?}"),
+    };
+    chat.open_mcp_server_tools(server);
+
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_TOOLS_VIEW_ID)
+    );
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    let alpha = rendered
+        .find("alpha_tool")
+        .expect("alpha tool should render");
+    let middle = rendered
+        .find("middle_tool")
+        .expect("middle tool should render");
+    let zulu = rendered.find("zulu_tool").expect("zulu tool should render");
+    assert!(alpha < middle && middle < zulu);
+    assert_chatwidget_snapshot!("mcp_picker_sorted_tool_list", rendered);
+
+    press(&mut chat, KeyCode::Enter);
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_TOOLS_VIEW_ID)
+    );
+    assert!(rx.try_recv().is_err());
+
+    press(&mut chat, KeyCode::Esc);
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_DETAIL_VIEW_ID)
+    );
+    press(&mut chat, KeyCode::Esc);
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_LIST_VIEW_ID)
+    );
 }
