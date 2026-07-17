@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 128
+expression: "render_bottom_popup(&chat, 80)"
+---
+  MCP servers
+  Failed to load MCP inventory: inventory service unavailable
+
+› 1. Retry
+
+  Enter Retry  Esc Close

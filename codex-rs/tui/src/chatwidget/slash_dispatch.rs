@@ -497,7 +497,11 @@ impl ChatWidget {
                 self.add_app_server_stub_message("Memory maintenance");
             }
             SlashCommand::Mcp => {
-                self.add_mcp_output(McpServerStatusDetail::ToolsAndAuthOnly);
+                self.open_mcp_picker_loading();
+                self.app_event_tx.send(AppEvent::FetchMcpPickerInventory {
+                    thread_id: self.thread_id(),
+                    focus_server: None,
+                });
             }
             SlashCommand::Apps => {
                 self.add_connectors_output();

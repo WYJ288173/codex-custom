@@ -1,0 +1,10 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 83
+expression: "render_bottom_popup(&chat, 80)"
+---
+  MCP servers
+
+›    Loading MCP inventory…
+
+  Esc Close
