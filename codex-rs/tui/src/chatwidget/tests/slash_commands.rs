@@ -2208,12 +2208,15 @@ async fn slash_mcp_requests_inventory_via_app_server() {
 
     chat.dispatch_command(SlashCommand::Mcp);
 
-    assert!(active_blob(&chat).contains("Loading MCP inventory"));
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_LIST_VIEW_ID)
+    );
     assert_matches!(
         rx.try_recv(),
-        Ok(AppEvent::FetchMcpInventory {
-            detail: McpServerStatusDetail::ToolsAndAuthOnly,
-            thread_id: Some(actual_thread_id)
+        Ok(AppEvent::FetchMcpPickerInventory {
+            thread_id: Some(actual_thread_id),
+            focus_server: None,
         }) if actual_thread_id == thread_id
     );
     assert!(op_rx.try_recv().is_err(), "expected no core op to be sent");

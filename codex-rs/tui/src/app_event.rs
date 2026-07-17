@@ -711,6 +711,19 @@ pub(crate) enum AppEvent {
         thread_id: Option<ThreadId>,
     },
 
+    /// Fetch MCP inventory for the interactive server picker.
+    FetchMcpPickerInventory {
+        thread_id: Option<ThreadId>,
+        focus_server: Option<String>,
+    },
+
+    /// Result of fetching MCP inventory for the interactive server picker.
+    McpPickerInventoryLoaded {
+        result: Result<Vec<McpServerStatus>, String>,
+        thread_id: Option<ThreadId>,
+        focus_server: Option<String>,
+    },
+
     /// Result of the startup skills refresh that runs after the first frame is scheduled.
     ///
     /// This event is startup-only. Interactive skills refreshes are handled synchronously through the app

@@ -242,6 +242,7 @@ mod goal_validation;
 mod guardian;
 pub(crate) mod helpers;
 mod history_replay;
+mod mcp_picker;
 mod mcp_startup;
 mod permissions;
 mod plan_mode;
