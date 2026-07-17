@@ -150,7 +150,7 @@ The existing `/mcp verbose` path continues through the transcript inventory rend
 6. The detail view is replaced with the OAuth progress view, which retains the URL in memory for `Open browser again`.
 7. `App` handles the existing global `McpServerOauthLoginCompleted` notification instead of forwarding it to the current no-op ChatWidget branch.
 8. Only a completion notification matching the pending server is accepted; stale or mismatched notifications are ignored with tracing.
-9. On success, the TUI calls the existing `mcpServer/refresh` RPC, then fetches a fresh inventory and returns to the selected server's detail view.
+9. On success, the TUI calls the existing typed `McpServerRefresh` request (`config/mcpServer/reload` on the wire), then fetches a fresh inventory and returns to the selected server's detail view.
 10. On failure or timeout, the progress view becomes an error view with `Retry` and `Close`.
 
 No core MCP connection manager, OAuth store, app-server OAuth implementation, or wire type needs to change.
