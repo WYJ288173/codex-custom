@@ -1339,6 +1339,12 @@ impl BottomPane {
         !self.view_stack.is_empty()
     }
 
+    pub(crate) fn has_view_id(&self, view_id: &'static str) -> bool {
+        self.view_stack
+            .iter()
+            .any(|view| view.view_id() == Some(view_id))
+    }
+
     pub(crate) fn active_view_will_interrupt_turn_on_key_event(&self, key_event: KeyEvent) -> bool {
         self.is_task_running
             && self
@@ -2237,6 +2243,29 @@ mod tests {
 
         pane.pre_draw_tick_at(now + APPROVAL_PROMPT_TYPING_IDLE_DELAY);
         assert!(pane.view_stack.is_empty());
+    }
+
+    #[test]
+    fn has_view_id_finds_active_and_covered_views() {
+        let (tx_raw, _rx) = unbounded_channel::<AppEvent>();
+        let tx = AppEventSender::new(tx_raw);
+        let mut pane = test_pane(tx);
+
+        pane.push_view(Box::new(DismissibleView {
+            id: Some("mcp-list"),
+            ..Default::default()
+        }));
+        assert!(pane.has_view_id("mcp-list"));
+
+        pane.push_view(Box::new(DismissibleView {
+            id: Some("overlay"),
+            ..Default::default()
+        }));
+        assert!(pane.has_view_id("mcp-list"));
+        assert!(!pane.has_view_id("missing"));
+
+        assert!(pane.dismiss_view_by_id("mcp-list"));
+        assert!(!pane.has_view_id("mcp-list"));
     }
 
     #[test]
