@@ -56,6 +56,31 @@ impl App {
         });
     }
 
+    pub(super) fn fetch_mcp_picker_inventory(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: Option<ThreadId>,
+        focus_server: Option<String>,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        let request_thread_id = self.mcp_inventory_request_thread_id(thread_id);
+        tokio::spawn(async move {
+            let result = fetch_all_mcp_server_statuses(
+                request_handle,
+                McpServerStatusDetail::ToolsAndAuthOnly,
+                request_thread_id,
+            )
+            .await
+            .map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::McpPickerInventoryLoaded {
+                result,
+                thread_id,
+                focus_server,
+            });
+        });
+    }
+
     fn mcp_inventory_request_thread_id(&self, thread_id: Option<ThreadId>) -> Option<ThreadId> {
         thread_id.filter(|thread_id| {
             self.active_thread_id == Some(*thread_id)
@@ -731,6 +756,20 @@ impl App {
             .add_to_history(history_cell::new_mcp_tools_output_from_statuses(
                 &statuses, detail,
             ));
+    }
+
+    pub(super) fn handle_mcp_picker_inventory_result(
+        &mut self,
+        result: Result<Vec<McpServerStatus>, String>,
+        thread_id: Option<ThreadId>,
+        focus_server: Option<String>,
+    ) {
+        if thread_id.is_some() && thread_id != self.current_displayed_thread_id() {
+            return;
+        }
+
+        self.chat_widget
+            .on_mcp_picker_inventory_loaded(result, focus_server);
     }
 
     pub(super) fn clear_committed_mcp_inventory_loading(&mut self) {

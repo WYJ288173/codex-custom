@@ -965,6 +965,20 @@ impl App {
             } => {
                 self.handle_mcp_inventory_result(result, detail, thread_id);
             }
+            AppEvent::FetchMcpPickerInventory {
+                thread_id,
+                focus_server,
+            } => {
+                self.chat_widget.open_mcp_picker_loading();
+                self.fetch_mcp_picker_inventory(app_server, thread_id, focus_server);
+            }
+            AppEvent::McpPickerInventoryLoaded {
+                result,
+                thread_id,
+                focus_server,
+            } => {
+                self.handle_mcp_picker_inventory_result(result, thread_id, focus_server);
+            }
             AppEvent::SkillsListLoaded { result } => {
                 self.handle_skills_list_result(
                     result.map_err(|err| color_eyre::eyre::eyre!(err)),
