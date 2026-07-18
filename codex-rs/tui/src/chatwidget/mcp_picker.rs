@@ -243,15 +243,23 @@ fn oauth_starting_params(server: McpServerStatus) -> SelectionViewParams {
     }
 }
 
-fn oauth_progress_params(server: McpServerStatus) -> SelectionViewParams {
+fn oauth_progress_params(
+    server: McpServerStatus,
+    operation_id: String,
+    subtitle: String,
+) -> SelectionViewParams {
     SelectionViewParams {
         view_id: Some(MCP_OAUTH_VIEW_ID),
         title: Some(format!("Authenticating {}…", server.name)),
-        subtitle: Some("Complete sign-in in your browser, then return here.".to_string()),
+        subtitle: Some(subtitle),
         items: vec![
             SelectionItem {
                 name: "Open browser again".to_string(),
-                is_disabled: true,
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::OpenPendingMcpOauthUrl {
+                        operation_id: operation_id.clone(),
+                    });
+                })],
                 ..Default::default()
             },
             SelectionItem {
@@ -387,10 +395,35 @@ impl ChatWidget {
             .replace_selection_view_if_present(MCP_DETAIL_VIEW_ID, oauth_starting_params(server));
     }
 
-    pub(crate) fn show_mcp_oauth_progress(&mut self, server: McpServerStatus) {
-        let _ = self
-            .bottom_pane
-            .replace_selection_view_if_present(MCP_OAUTH_VIEW_ID, oauth_progress_params(server));
+    pub(crate) fn show_mcp_oauth_progress(
+        &mut self,
+        server: McpServerStatus,
+        operation_id: String,
+    ) {
+        let _ = self.bottom_pane.replace_selection_view_if_present(
+            MCP_OAUTH_VIEW_ID,
+            oauth_progress_params(
+                server,
+                operation_id,
+                "Complete sign-in in your browser, then return here.".to_string(),
+            ),
+        );
+    }
+
+    pub(crate) fn mcp_oauth_browser_error_message(error: &str) -> String {
+        format!("Failed to open browser: {}", redact_urls(error))
+    }
+
+    pub(crate) fn show_mcp_oauth_browser_error(
+        &mut self,
+        server: McpServerStatus,
+        operation_id: String,
+        message: String,
+    ) -> bool {
+        self.bottom_pane.replace_selection_view_if_present(
+            MCP_OAUTH_VIEW_ID,
+            oauth_progress_params(server, operation_id, redact_urls(&message)),
+        )
     }
 
     pub(crate) fn show_mcp_oauth_busy(&mut self, server: McpServerStatus) {
