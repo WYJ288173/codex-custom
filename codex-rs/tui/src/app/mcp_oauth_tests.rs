@@ -1,11 +1,15 @@
 use super::*;
 use crate::app::test_support::make_test_app;
+use crate::app::test_support::make_test_app_with_event_rx;
+use crate::app_event::AppEvent;
 use crate::app_event::McpOauthAuthorizationUrl;
 use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::McpAuthStatus;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::RequestId;
 use pretty_assertions::assert_eq;
+
+const SECRET_URL: &str = "https://oauth.example/authorize?state=DO_NOT_PERSIST";
 
 fn server(name: &str) -> McpServerStatus {
     McpServerStatus {
@@ -16,6 +20,17 @@ fn server(name: &str) -> McpServerStatus {
         resource_templates: Vec::new(),
         auth_status: McpAuthStatus::NotLoggedIn,
     }
+}
+
+fn lines_to_string(lines: &[ratatui::text::Line<'_>]) -> String {
+    let mut rendered = String::new();
+    for line in lines {
+        for span in &line.spans {
+            rendered.push_str(&span.content);
+        }
+        rendered.push('\n');
+    }
+    rendered
 }
 
 #[test]
@@ -128,7 +143,10 @@ async fn matching_oauth_login_result_stores_url_and_waits_for_completion() {
         .as_ref()
         .expect("OAuth operation should wait for completion");
     assert_eq!(
-        pending.authorization_url.as_ref().map(|url| url.as_str()),
+        pending
+            .authorization_url
+            .as_ref()
+            .map(crate::app_event::McpOauthAuthorizationUrl::as_str),
         Some(authorization_url.as_str())
     );
     assert_eq!(pending.phase, PendingMcpOauthPhase::WaitingForCompletion);
@@ -218,4 +236,176 @@ async fn duplicate_oauth_start_shows_busy_feedback_without_replacing_pending_ope
     assert_eq!(pending.server, first_server);
     assert_eq!(pending.authorization_url, None);
     assert_eq!(pending.phase, PendingMcpOauthPhase::RequestingUrl);
+}
+
+#[tokio::test]
+async fn mcp_oauth_url_login_result_emits_id_only_open_event() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should start");
+
+    app.handle_mcp_oauth_login_started(
+        operation_id.clone(),
+        Ok(McpOauthAuthorizationUrl::new(SECRET_URL.to_string())),
+    );
+
+    let event = app_event_rx
+        .try_recv()
+        .expect("matching login result should request the initial browser open");
+    let debug = format!("{event:?}");
+    assert_matches::assert_matches!(
+        event,
+        AppEvent::OpenPendingMcpOauthUrl { operation_id: actual } if actual == operation_id
+    );
+    assert!(debug.contains(&operation_id));
+    assert!(!debug.contains(SECRET_URL));
+    assert!(!debug.contains("DO_NOT_PERSIST"));
+    assert!(app_event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn mcp_oauth_url_initial_open_uses_exact_in_memory_url_once_without_history() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should start");
+    app.handle_mcp_oauth_login_started(
+        operation_id.clone(),
+        Ok(McpOauthAuthorizationUrl::new(SECRET_URL.to_string())),
+    );
+    assert_matches::assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::OpenPendingMcpOauthUrl { operation_id: actual }) if actual == operation_id
+    );
+    let mut opened = Vec::new();
+
+    app.open_pending_mcp_oauth_url_with(&operation_id, |url| {
+        opened.push(url.to_string());
+        Ok::<_, String>(())
+    });
+
+    assert_eq!(opened, vec![SECRET_URL.to_string()]);
+    assert!(app_event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn mcp_oauth_url_stale_missing_and_non_waiting_operations_do_not_open() {
+    let mut app = make_test_app().await;
+    let operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should start");
+    let mut opened = Vec::new();
+
+    app.open_pending_mcp_oauth_url_with("stale-operation", |url| {
+        opened.push(url.to_string());
+        Ok::<_, String>(())
+    });
+    app.open_pending_mcp_oauth_url_with(&operation_id, |url| {
+        opened.push(url.to_string());
+        Ok::<_, String>(())
+    });
+    app.pending_mcp_oauth
+        .as_mut()
+        .expect("OAuth operation should remain pending")
+        .phase = PendingMcpOauthPhase::WaitingForCompletion;
+    app.open_pending_mcp_oauth_url_with(&operation_id, |url| {
+        opened.push(url.to_string());
+        Ok::<_, String>(())
+    });
+    app.pending_mcp_oauth
+        .as_mut()
+        .expect("OAuth operation should remain pending")
+        .authorization_url = Some(McpOauthAuthorizationUrl::new(SECRET_URL.to_string()));
+    app.open_pending_mcp_oauth_url_with("stale-operation", |url| {
+        opened.push(url.to_string());
+        Ok::<_, String>(())
+    });
+
+    assert!(opened.is_empty());
+    let pending = app
+        .pending_mcp_oauth
+        .as_ref()
+        .expect("guard failures must preserve the pending operation");
+    assert_eq!(pending.operation_id, operation_id);
+    assert_eq!(
+        pending
+            .authorization_url
+            .as_ref()
+            .map(McpOauthAuthorizationUrl::as_str),
+        Some(SECRET_URL)
+    );
+    assert_eq!(pending.phase, PendingMcpOauthPhase::WaitingForCompletion);
+}
+
+#[tokio::test]
+async fn mcp_oauth_url_visible_failure_is_sanitized_and_retryable() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let selected_server = server("sentry");
+    app.chat_widget
+        .open_mcp_server_detail(selected_server.clone());
+    let operation_id = app
+        .begin_mcp_oauth(selected_server)
+        .expect("OAuth operation should start");
+    app.handle_mcp_oauth_login_started(
+        operation_id.clone(),
+        Ok(McpOauthAuthorizationUrl::new(SECRET_URL.to_string())),
+    );
+    let _ = app_event_rx.try_recv();
+
+    app.open_pending_mcp_oauth_url_with(&operation_id, |_url| {
+        Err::<(), _>(format!("simulated opener failure at {SECRET_URL}"))
+    });
+
+    let rendered =
+        crate::chatwidget::tests::helpers::render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(rendered.contains("Failed to open browser: simulated opener failure at [REDACTED]"));
+    assert!(rendered.contains("Open browser again"));
+    assert!(!rendered.contains(SECRET_URL));
+    assert!(!rendered.contains("DO_NOT_PERSIST"));
+    assert!(app_event_rx.try_recv().is_err());
+    let pending = app
+        .pending_mcp_oauth
+        .as_ref()
+        .expect("browser failure must retain pending OAuth");
+    assert_eq!(pending.operation_id, operation_id);
+    assert_eq!(pending.phase, PendingMcpOauthPhase::WaitingForCompletion);
+}
+
+#[tokio::test]
+async fn mcp_oauth_url_failure_after_close_adds_sanitized_history_without_reopening() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let selected_server = server("sentry");
+    app.chat_widget
+        .open_mcp_server_detail(selected_server.clone());
+    let operation_id = app
+        .begin_mcp_oauth(selected_server)
+        .expect("OAuth operation should start");
+    app.handle_mcp_oauth_login_started(
+        operation_id.clone(),
+        Ok(McpOauthAuthorizationUrl::new(SECRET_URL.to_string())),
+    );
+    let _ = app_event_rx.try_recv();
+    app.chat_widget.dismiss_mcp_views();
+
+    app.open_pending_mcp_oauth_url_with(&operation_id, |_url| {
+        Err::<(), _>(format!("simulated opener failure at {SECRET_URL}"))
+    });
+
+    assert!(app.chat_widget.no_modal_or_popup_active());
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected one sanitized history cell, got {other:?}"),
+    };
+    let rendered = lines_to_string(&cell.display_lines(/*width*/ 80));
+    assert!(rendered.contains("Failed to open browser: simulated opener failure at [REDACTED]"));
+    assert!(!rendered.contains(SECRET_URL));
+    assert!(!rendered.contains("DO_NOT_PERSIST"));
+    assert!(app_event_rx.try_recv().is_err());
+    let pending = app
+        .pending_mcp_oauth
+        .as_ref()
+        .expect("failure after close must retain pending OAuth");
+    assert_eq!(pending.operation_id, operation_id);
+    assert_eq!(pending.phase, PendingMcpOauthPhase::WaitingForCompletion);
 }

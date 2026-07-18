@@ -1,10 +1,10 @@
 ---
 source: tui/src/chatwidget/tests/mcp_picker.rs
-assertion_line: 343
+assertion_line: 368
 expression: rendered
 ---
   Authenticating sentry…
-  Complete sign-in in your browser, then return here.
+  Failed to open browser: simulated opener failure
 
 › 1. Open browser again
   2. Close
