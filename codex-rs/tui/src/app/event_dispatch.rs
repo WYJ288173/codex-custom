@@ -994,6 +994,9 @@ impl App {
             } => {
                 self.handle_mcp_oauth_login_started(operation_id, result);
             }
+            AppEvent::OpenPendingMcpOauthUrl { operation_id } => {
+                self.open_pending_mcp_oauth_url(operation_id);
+            }
             AppEvent::DismissMcpViews => {
                 self.chat_widget.dismiss_mcp_views();
             }

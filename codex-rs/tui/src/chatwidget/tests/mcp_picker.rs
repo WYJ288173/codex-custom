@@ -329,18 +329,50 @@ async fn mcp_oauth_starting_snapshot() {
 }
 
 #[tokio::test]
-async fn mcp_oauth_progress_snapshot_has_presentational_browser_retry_and_close() {
-    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+async fn mcp_oauth_progress_snapshot_has_enabled_browser_retry_and_close() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
     chat.open_mcp_server_detail(server.clone());
     chat.open_mcp_oauth_starting(server.clone());
 
-    chat.show_mcp_oauth_progress(server);
+    chat.show_mcp_oauth_progress(server, "mcp-oauth-operation".to_string());
 
     let rendered = render_bottom_popup(&chat, /*width*/ 80);
     assert!(rendered.contains("Open browser again"));
     assert!(rendered.contains("Close"));
     assert_chatwidget_snapshot!("mcp_oauth_progress", rendered);
+
+    press(&mut chat, KeyCode::Enter);
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenPendingMcpOauthUrl { operation_id })
+            if operation_id == "mcp-oauth-operation"
+    );
+}
+
+#[tokio::test]
+async fn mcp_oauth_url_browser_failure_snapshot_keeps_retry_enabled() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+    chat.open_mcp_server_detail(server.clone());
+    chat.open_mcp_oauth_starting(server.clone());
+    chat.show_mcp_oauth_browser_error(
+        server,
+        "mcp-oauth-operation".to_string(),
+        "Failed to open browser: simulated opener failure".to_string(),
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(rendered.contains("Failed to open browser: simulated opener failure"));
+    assert!(rendered.contains("Open browser again"));
+    assert_chatwidget_snapshot!("mcp_oauth_browser_error", rendered);
+
+    press(&mut chat, KeyCode::Enter);
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::OpenPendingMcpOauthUrl { operation_id })
+            if operation_id == "mcp-oauth-operation"
+    );
 }
 
 #[tokio::test]
@@ -388,7 +420,7 @@ async fn esc_from_mcp_oauth_views_dismisses_the_whole_mcp_stack() {
         chat.open_mcp_oauth_starting(server.clone());
         match stage {
             "starting" => {}
-            "progress" => chat.show_mcp_oauth_progress(server),
+            "progress" => chat.show_mcp_oauth_progress(server, "mcp-oauth-operation".to_string()),
             "error" => chat.show_mcp_oauth_error(server, "request failed".to_string()),
             other => panic!("unexpected OAuth view stage {other}"),
         }

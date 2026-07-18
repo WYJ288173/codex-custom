@@ -7,6 +7,7 @@ use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::McpServerOauthLoginResponse;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::RequestId;
+use std::fmt::Display;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -87,12 +88,50 @@ impl App {
                 pending.authorization_url = Some(authorization_url);
                 pending.phase = PendingMcpOauthPhase::WaitingForCompletion;
                 let server = pending.server.clone();
-                self.chat_widget.show_mcp_oauth_progress(server);
+                self.chat_widget
+                    .show_mcp_oauth_progress(server, operation_id.clone());
+                self.app_event_tx
+                    .send(AppEvent::OpenPendingMcpOauthUrl { operation_id });
             }
             Err(error) => {
                 let server = pending.server.clone();
                 self.pending_mcp_oauth = None;
                 self.chat_widget.show_mcp_oauth_error(server, error);
+            }
+        }
+    }
+
+    pub(super) fn open_pending_mcp_oauth_url(&mut self, operation_id: String) {
+        self.open_pending_mcp_oauth_url_with(&operation_id, webbrowser::open);
+    }
+
+    fn open_pending_mcp_oauth_url_with<E, F>(&mut self, operation_id: &str, opener: F)
+    where
+        E: Display,
+        F: FnOnce(&str) -> Result<(), E>,
+    {
+        let Some(pending) = self.pending_mcp_oauth.as_ref() else {
+            return;
+        };
+        if pending.operation_id != operation_id
+            || pending.phase != PendingMcpOauthPhase::WaitingForCompletion
+        {
+            return;
+        }
+        let Some(authorization_url) = pending.authorization_url.as_ref() else {
+            return;
+        };
+        let server = pending.server.clone();
+
+        if let Err(error) = opener(authorization_url.as_str()) {
+            let message =
+                crate::chatwidget::ChatWidget::mcp_oauth_browser_error_message(&error.to_string());
+            if !self.chat_widget.show_mcp_oauth_browser_error(
+                server,
+                operation_id.to_string(),
+                message.clone(),
+            ) {
+                self.chat_widget.add_error_message(message);
             }
         }
     }

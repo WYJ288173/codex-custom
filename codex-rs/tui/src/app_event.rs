@@ -131,7 +131,6 @@ impl McpOauthAuthorizationUrl {
         Self(url)
     }
 
-    #[allow(dead_code)] // Consumed by the browser-opening path added in the next staged task.
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
@@ -811,6 +810,11 @@ pub(crate) enum AppEvent {
     McpOauthLoginStarted {
         operation_id: String,
         result: Result<McpOauthAuthorizationUrl, String>,
+    },
+
+    /// Open the in-memory authorization URL for the matching pending MCP OAuth operation.
+    OpenPendingMcpOauthUrl {
+        operation_id: String,
     },
 
     /// Close every view belonging to the MCP manager without cancelling OAuth.
