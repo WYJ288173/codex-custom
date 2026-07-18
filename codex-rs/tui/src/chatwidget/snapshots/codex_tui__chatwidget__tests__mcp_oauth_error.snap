@@ -1,10 +1,10 @@
 ---
 source: tui/src/chatwidget/tests/mcp_picker.rs
-assertion_line: 358
+assertion_line: 369
 expression: rendered
 ---
   Authentication failed · sentry
-  request failed at [REDACTED]
+  request failed at [REDACTED] then [REDACTED] and [REDACTED]
 
 › 1. Retry
   2. Close

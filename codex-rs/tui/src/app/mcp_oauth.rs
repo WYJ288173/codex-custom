@@ -52,7 +52,8 @@ impl App {
     }
 
     fn begin_mcp_oauth(&mut self, server: McpServerStatus) -> Option<String> {
-        if self.pending_mcp_oauth.is_some() {
+        if let Some(pending) = &self.pending_mcp_oauth {
+            self.chat_widget.show_mcp_oauth_busy(pending.server.clone());
             return None;
         }
 

@@ -148,3 +148,74 @@ async fn matching_oauth_login_failure_clears_pending_operation() {
 
     assert!(app.pending_mcp_oauth.is_none());
 }
+
+#[tokio::test]
+async fn oauth_start_after_mcp_views_close_keeps_panel_closed() {
+    let mut app = make_test_app().await;
+    let selected_server = server("sentry");
+    app.chat_widget
+        .open_mcp_server_detail(selected_server.clone());
+    app.chat_widget.dismiss_mcp_views();
+    assert!(app.chat_widget.no_modal_or_popup_active());
+
+    let operation_id = app
+        .begin_mcp_oauth(selected_server.clone())
+        .expect("OAuth operation should start after the panel closes");
+
+    let pending = app
+        .pending_mcp_oauth
+        .as_ref()
+        .expect("OAuth operation should continue in the background");
+    assert_eq!(pending.operation_id, operation_id);
+    assert_eq!(pending.server, selected_server);
+    assert_eq!(pending.phase, PendingMcpOauthPhase::RequestingUrl);
+    assert!(app.chat_widget.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn late_oauth_login_result_after_mcp_views_close_does_not_reopen_panel() {
+    let mut app = make_test_app().await;
+    let operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should start");
+    assert!(app.chat_widget.no_modal_or_popup_active());
+
+    app.handle_mcp_oauth_login_started(
+        operation_id,
+        Ok(McpOauthAuthorizationUrl::new(
+            "https://auth.example.test/authorize?state=secret-state".to_string(),
+        )),
+    );
+
+    let pending = app
+        .pending_mcp_oauth
+        .as_ref()
+        .expect("OAuth operation should wait in the background");
+    assert_eq!(pending.phase, PendingMcpOauthPhase::WaitingForCompletion);
+    assert!(app.chat_widget.no_modal_or_popup_active());
+}
+
+#[tokio::test]
+async fn duplicate_oauth_start_shows_busy_feedback_without_replacing_pending_operation() {
+    let mut app = make_test_app().await;
+    let first_server = server("first");
+    let operation_id = app
+        .begin_mcp_oauth(first_server.clone())
+        .expect("first OAuth operation should start");
+    app.chat_widget.open_mcp_server_detail(server("second"));
+
+    assert_eq!(app.begin_mcp_oauth(server("second")), None);
+
+    let rendered =
+        crate::chatwidget::tests::helpers::render_bottom_popup(&app.chat_widget, /*width*/ 80);
+    assert!(rendered.contains("Already authenticating first"));
+    assert_eq!(app.begin_mcp_oauth(server("third")), None);
+    let pending = app
+        .pending_mcp_oauth
+        .as_ref()
+        .expect("first OAuth operation should remain pending");
+    assert_eq!(pending.operation_id, operation_id);
+    assert_eq!(pending.server, first_server);
+    assert_eq!(pending.authorization_url, None);
+    assert_eq!(pending.phase, PendingMcpOauthPhase::RequestingUrl);
+}
