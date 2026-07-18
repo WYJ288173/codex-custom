@@ -215,6 +215,7 @@ mod history_pagination;
 mod history_ui;
 mod input;
 mod loaded_threads;
+mod mcp_oauth;
 mod pending_interactive_replay;
 mod pets;
 mod platform_actions;
@@ -600,6 +601,7 @@ pub(crate) struct App {
     // Serialize hook enablement writes per hook so stale completions cannot
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
+    pending_mcp_oauth: Option<mcp_oauth::PendingMcpOauth>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1091,6 +1093,7 @@ See the Codex keymap documentation for supported actions and examples."
             rate_limit_hard_stop_generation: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            pending_mcp_oauth: None,
         };
         if let Some(entry) = startup_hooks_browser {
             app.chat_widget.open_hooks_browser(entry);

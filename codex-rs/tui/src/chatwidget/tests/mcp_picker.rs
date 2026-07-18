@@ -215,9 +215,10 @@ async fn mcp_picker_not_logged_in_server_detail_snapshot() {
 }
 
 #[tokio::test]
-async fn mcp_picker_oauth_detail_reauthenticate_is_presentational() {
+async fn mcp_picker_oauth_detail_reauthenticate_starts_oauth() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
-    chat.open_mcp_server_detail(status("oauth-server", McpAuthStatus::OAuth, true, &[]));
+    let server = status("oauth-server", McpAuthStatus::OAuth, true, &[]);
+    chat.open_mcp_server_detail(server.clone());
 
     let rendered = render_bottom_popup(&chat, /*width*/ 80);
     let rendered_lower = rendered.to_lowercase();
@@ -227,11 +228,10 @@ async fn mcp_picker_oauth_detail_reauthenticate_is_presentational() {
 
     press(&mut chat, KeyCode::Enter);
 
-    assert_eq!(
-        chat.bottom_pane.active_view_id(),
-        Some(crate::chatwidget::mcp_picker::MCP_DETAIL_VIEW_ID)
-    );
-    assert!(rx.try_recv().is_err());
+    match rx.try_recv() {
+        Ok(AppEvent::StartMcpOauth { server: actual }) => assert_eq!(actual, server),
+        other => panic!("expected StartMcpOauth event, got {other:?}"),
+    }
 }
 
 #[tokio::test]
@@ -306,4 +306,83 @@ async fn mcp_picker_view_tools_opens_sorted_informational_list_and_esc_navigates
         chat.bottom_pane.active_view_id(),
         Some(crate::chatwidget::mcp_picker::MCP_LIST_VIEW_ID)
     );
+}
+
+#[tokio::test]
+async fn mcp_oauth_starting_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+    chat.open_mcp_server_detail(server.clone());
+
+    chat.open_mcp_oauth_starting(server);
+
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_OAUTH_VIEW_ID)
+    );
+    assert_chatwidget_snapshot!(
+        "mcp_oauth_starting",
+        render_bottom_popup(&chat, /*width*/ 80)
+    );
+}
+
+#[tokio::test]
+async fn mcp_oauth_progress_snapshot_has_presentational_browser_retry_and_close() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+    chat.open_mcp_server_detail(server.clone());
+    chat.open_mcp_oauth_starting(server.clone());
+
+    chat.show_mcp_oauth_progress(server);
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(rendered.contains("Open browser again"));
+    assert!(rendered.contains("Close"));
+    assert_chatwidget_snapshot!("mcp_oauth_progress", rendered);
+}
+
+#[tokio::test]
+async fn mcp_oauth_error_snapshot_redacts_urls() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+    let secret_url = "https://auth.example.test/authorize?state=secret-state";
+    chat.open_mcp_server_detail(server.clone());
+    chat.open_mcp_oauth_starting(server.clone());
+
+    chat.show_mcp_oauth_error(server, format!("request failed at {secret_url}"));
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(!rendered.contains(secret_url));
+    assert!(!rendered.contains("secret-state"));
+    assert!(rendered.contains("[REDACTED]"));
+    assert_chatwidget_snapshot!("mcp_oauth_error", rendered);
+
+    press(&mut chat, KeyCode::Enter);
+    let retry_server = match rx.try_recv() {
+        Ok(AppEvent::StartMcpOauth { server: actual }) => actual,
+        other => panic!("expected StartMcpOauth event, got {other:?}"),
+    };
+    chat.open_mcp_oauth_starting(retry_server);
+    assert!(render_bottom_popup(&chat, /*width*/ 80).contains("Requesting a browser sign-in link"));
+}
+
+#[tokio::test]
+async fn esc_from_mcp_oauth_starting_and_progress_dismisses_the_whole_mcp_stack() {
+    for show_progress in [false, true] {
+        let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+        chat.open_mcp_picker_loading();
+        chat.on_mcp_picker_inventory_loaded(Ok(vec![server.clone()]), /*focus_server*/ None);
+        chat.open_mcp_server_detail(server.clone());
+        chat.open_mcp_oauth_starting(server.clone());
+        if show_progress {
+            chat.show_mcp_oauth_progress(server);
+        }
+
+        press(&mut chat, KeyCode::Esc);
+
+        assert_matches!(rx.try_recv(), Ok(AppEvent::DismissMcpViews));
+        chat.dismiss_mcp_views();
+        assert!(chat.bottom_pane.no_modal_or_popup_active());
+    }
 }

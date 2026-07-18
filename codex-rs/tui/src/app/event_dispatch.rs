@@ -985,6 +985,18 @@ impl App {
             AppEvent::OpenMcpServerTools { server } => {
                 self.chat_widget.open_mcp_server_tools(server);
             }
+            AppEvent::StartMcpOauth { server } => {
+                self.start_mcp_oauth(app_server, server);
+            }
+            AppEvent::McpOauthLoginStarted {
+                operation_id,
+                result,
+            } => {
+                self.handle_mcp_oauth_login_started(operation_id, result);
+            }
+            AppEvent::DismissMcpViews => {
+                self.chat_widget.dismiss_mcp_views();
+            }
             AppEvent::SkillsListLoaded { result } => {
                 self.handle_skills_list_result(
                     result.map_err(|err| color_eyre::eyre::eyre!(err)),
