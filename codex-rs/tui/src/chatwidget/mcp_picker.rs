@@ -140,6 +140,7 @@ fn detail_params(server: McpServerStatus) -> SelectionViewParams {
             ..Default::default()
         });
     }
+    let has_actions = !items.is_empty();
 
     SelectionViewParams {
         view_id: Some(MCP_DETAIL_VIEW_ID),
@@ -151,7 +152,7 @@ fn detail_params(server: McpServerStatus) -> SelectionViewParams {
             tool_count_label(tool_count),
         )),
         items,
-        footer_hint: Some(if tool_count > 0 {
+        footer_hint: Some(if has_actions {
             Line::from("↑↓ Navigate  Enter Select  Esc Back")
         } else {
             Line::from("Esc Back")
@@ -265,6 +266,22 @@ fn oauth_progress_params(server: McpServerStatus) -> SelectionViewParams {
     }
 }
 
+fn oauth_busy_params(server: McpServerStatus) -> SelectionViewParams {
+    SelectionViewParams {
+        view_id: Some(MCP_OAUTH_VIEW_ID),
+        title: Some(format!("Already authenticating {}…", server.name)),
+        subtitle: Some("Complete the current sign-in before starting another.".to_string()),
+        items: vec![SelectionItem {
+            name: "Close".to_string(),
+            actions: vec![Box::new(|tx| tx.send(AppEvent::DismissMcpViews))],
+            ..Default::default()
+        }],
+        footer_hint: Some(Line::from("Enter Close  Esc Close")),
+        on_cancel: Some(Box::new(|tx| tx.send(AppEvent::DismissMcpViews))),
+        ..Default::default()
+    }
+}
+
 fn oauth_error_params(server: McpServerStatus, error: String) -> SelectionViewParams {
     let retry_server = server.clone();
     SelectionViewParams {
@@ -297,8 +314,9 @@ fn redact_urls(error: &str) -> String {
     let mut redacted = String::new();
     let mut remaining = error;
     loop {
-        let http = remaining.find("http://");
-        let https = remaining.find("https://");
+        let lowercase = remaining.to_ascii_lowercase();
+        let http = lowercase.find("http://");
+        let https = lowercase.find("https://");
         let start = match (http, https) {
             (Some(http), Some(https)) => Some(http.min(https)),
             (Some(http), None) => Some(http),
@@ -373,6 +391,19 @@ impl ChatWidget {
         let _ = self
             .bottom_pane
             .replace_selection_view_if_present(MCP_OAUTH_VIEW_ID, oauth_progress_params(server));
+    }
+
+    pub(crate) fn show_mcp_oauth_busy(&mut self, server: McpServerStatus) {
+        let params = oauth_busy_params(server.clone());
+        if self
+            .bottom_pane
+            .replace_selection_view_if_present(MCP_OAUTH_VIEW_ID, params)
+        {
+            return;
+        }
+        let _ = self
+            .bottom_pane
+            .replace_selection_view_if_present(MCP_DETAIL_VIEW_ID, oauth_busy_params(server));
     }
 
     pub(crate) fn show_mcp_oauth_error(&mut self, server: McpServerStatus, error: String) {
