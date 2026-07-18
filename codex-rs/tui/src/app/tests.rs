@@ -4498,6 +4498,7 @@ async fn make_test_app() -> App {
         rate_limit_hard_stop_generation: 0,
         pending_plugin_enabled_writes: HashMap::new(),
         pending_hook_enabled_writes: HashMap::new(),
+        pending_mcp_oauth: None,
     }
 }
 
@@ -4565,6 +4566,7 @@ async fn make_test_app_with_channels() -> (
             rate_limit_hard_stop_generation: 0,
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
+            pending_mcp_oauth: None,
         },
         rx,
         op_rx,

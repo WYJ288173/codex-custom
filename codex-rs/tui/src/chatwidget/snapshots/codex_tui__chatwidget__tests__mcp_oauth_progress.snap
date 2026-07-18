@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 341
+expression: rendered
+---
+  Authenticating sentry…
+  Complete sign-in in your browser, then return here.
+
+     Open browser again
+› 1. Close
+
+  Enter Select  Esc Close

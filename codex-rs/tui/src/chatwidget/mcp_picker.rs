@@ -12,7 +12,6 @@ use ratatui::text::Line;
 pub(super) const MCP_LIST_VIEW_ID: &str = "mcp-list";
 pub(super) const MCP_DETAIL_VIEW_ID: &str = "mcp-detail";
 pub(super) const MCP_TOOLS_VIEW_ID: &str = "mcp-tools";
-#[allow(dead_code)]
 pub(super) const MCP_OAUTH_VIEW_ID: &str = "mcp-oauth";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,9 +129,14 @@ fn detail_params(server: McpServerStatus) -> SelectionViewParams {
         });
     }
     if let Some(action) = oauth_action(&server.auth_status) {
+        let oauth_server = server.clone();
         items.push(SelectionItem {
             name: action.to_string(),
-            is_disabled: true,
+            actions: vec![Box::new(move |tx| {
+                tx.send(AppEvent::StartMcpOauth {
+                    server: oauth_server.clone(),
+                });
+            })],
             ..Default::default()
         });
     }
@@ -222,6 +226,97 @@ fn error_params(
     }
 }
 
+fn oauth_starting_params(server: McpServerStatus) -> SelectionViewParams {
+    SelectionViewParams {
+        view_id: Some(MCP_OAUTH_VIEW_ID),
+        title: Some(format!("Authenticating {}…", server.name)),
+        subtitle: Some("Requesting a browser sign-in link…".to_string()),
+        items: vec![SelectionItem {
+            name: "Starting authentication…".to_string(),
+            is_disabled: true,
+            ..Default::default()
+        }],
+        footer_hint: Some(Line::from("Esc Close")),
+        on_cancel: Some(Box::new(|tx| tx.send(AppEvent::DismissMcpViews))),
+        ..Default::default()
+    }
+}
+
+fn oauth_progress_params(server: McpServerStatus) -> SelectionViewParams {
+    SelectionViewParams {
+        view_id: Some(MCP_OAUTH_VIEW_ID),
+        title: Some(format!("Authenticating {}…", server.name)),
+        subtitle: Some("Complete sign-in in your browser, then return here.".to_string()),
+        items: vec![
+            SelectionItem {
+                name: "Open browser again".to_string(),
+                is_disabled: true,
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Close".to_string(),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::DismissMcpViews))],
+                ..Default::default()
+            },
+        ],
+        footer_hint: Some(Line::from("Enter Select  Esc Close")),
+        on_cancel: Some(Box::new(|tx| tx.send(AppEvent::DismissMcpViews))),
+        ..Default::default()
+    }
+}
+
+fn oauth_error_params(server: McpServerStatus, error: String) -> SelectionViewParams {
+    let retry_server = server.clone();
+    SelectionViewParams {
+        view_id: Some(MCP_OAUTH_VIEW_ID),
+        title: Some(format!("Authentication failed · {}", server.name)),
+        subtitle: Some(redact_urls(&error)),
+        items: vec![
+            SelectionItem {
+                name: "Retry".to_string(),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::StartMcpOauth {
+                        server: retry_server.clone(),
+                    });
+                })],
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Close".to_string(),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::DismissMcpViews))],
+                ..Default::default()
+            },
+        ],
+        footer_hint: Some(Line::from("Enter Select  Esc Close")),
+        on_cancel: Some(Box::new(|tx| tx.send(AppEvent::DismissMcpViews))),
+        ..Default::default()
+    }
+}
+
+fn redact_urls(error: &str) -> String {
+    let mut redacted = String::new();
+    let mut remaining = error;
+    loop {
+        let http = remaining.find("http://");
+        let https = remaining.find("https://");
+        let start = match (http, https) {
+            (Some(http), Some(https)) => Some(http.min(https)),
+            (Some(http), None) => Some(http),
+            (None, Some(https)) => Some(https),
+            (None, None) => None,
+        };
+        let Some(start) = start else {
+            redacted.push_str(remaining);
+            return redacted;
+        };
+        redacted.push_str(&remaining[..start]);
+        redacted.push_str("[REDACTED]");
+        let url = &remaining[start..];
+        let end = url.find(char::is_whitespace).unwrap_or(url.len());
+        remaining = &url[end..];
+    }
+}
+
 impl ChatWidget {
     pub(crate) fn open_mcp_picker_loading(&mut self) {
         let params = loading_params();
@@ -259,5 +354,42 @@ impl ChatWidget {
 
     pub(crate) fn open_mcp_server_tools(&mut self, server: McpServerStatus) {
         self.bottom_pane.show_selection_view(tools_params(server));
+    }
+
+    pub(crate) fn open_mcp_oauth_starting(&mut self, server: McpServerStatus) {
+        let params = oauth_starting_params(server.clone());
+        if self
+            .bottom_pane
+            .replace_selection_view_if_present(MCP_OAUTH_VIEW_ID, params)
+        {
+            return;
+        }
+        let _ = self
+            .bottom_pane
+            .replace_selection_view_if_present(MCP_DETAIL_VIEW_ID, oauth_starting_params(server));
+    }
+
+    pub(crate) fn show_mcp_oauth_progress(&mut self, server: McpServerStatus) {
+        let _ = self
+            .bottom_pane
+            .replace_selection_view_if_present(MCP_OAUTH_VIEW_ID, oauth_progress_params(server));
+    }
+
+    pub(crate) fn show_mcp_oauth_error(&mut self, server: McpServerStatus, error: String) {
+        let _ = self.bottom_pane.replace_selection_view_if_present(
+            MCP_OAUTH_VIEW_ID,
+            oauth_error_params(server, error),
+        );
+    }
+
+    pub(crate) fn dismiss_mcp_views(&mut self) {
+        for view_id in [
+            MCP_OAUTH_VIEW_ID,
+            MCP_TOOLS_VIEW_ID,
+            MCP_DETAIL_VIEW_ID,
+            MCP_LIST_VIEW_ID,
+        ] {
+            while self.bottom_pane.dismiss_view_by_id(view_id) {}
+        }
     }
 }

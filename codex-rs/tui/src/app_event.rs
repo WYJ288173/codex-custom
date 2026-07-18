@@ -120,6 +120,26 @@ pub(crate) struct ConnectorsSnapshot {
     pub(crate) connectors: Vec<AppInfo>,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+pub(crate) struct McpOauthAuthorizationUrl(String);
+
+impl McpOauthAuthorizationUrl {
+    pub(crate) fn new(url: String) -> Self {
+        Self(url)
+    }
+
+    #[allow(dead_code)] // Consumed by the browser-opening path added in the next staged task.
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for McpOauthAuthorizationUrl {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("McpOauthAuthorizationUrl([REDACTED])")
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PluginLocation {
     Local { marketplace_path: AbsolutePathBuf },
@@ -733,6 +753,20 @@ pub(crate) enum AppEvent {
     OpenMcpServerTools {
         server: McpServerStatus,
     },
+
+    /// Start one app-owned MCP OAuth operation.
+    StartMcpOauth {
+        server: McpServerStatus,
+    },
+
+    /// Result of requesting an MCP OAuth authorization URL.
+    McpOauthLoginStarted {
+        operation_id: String,
+        result: Result<McpOauthAuthorizationUrl, String>,
+    },
+
+    /// Close every view belonging to the MCP manager without cancelling OAuth.
+    DismissMcpViews,
 
     /// Result of the startup skills refresh that runs after the first frame is scheduled.
     ///
