@@ -223,8 +223,10 @@ async fn mcp_picker_oauth_detail_reauthenticate_starts_oauth() {
     let rendered = render_bottom_popup(&chat, /*width*/ 80);
     let rendered_lower = rendered.to_lowercase();
     assert!(rendered.contains("Re-authenticate"));
+    assert!(rendered.contains("Enter Select"));
     assert!(!rendered_lower.contains("clear authentication"));
     assert!(!rendered_lower.contains("logout"));
+    assert_chatwidget_snapshot!("mcp_picker_oauth_zero_tool_detail", rendered);
 
     press(&mut chat, KeyCode::Enter);
 
@@ -345,16 +347,25 @@ async fn mcp_oauth_progress_snapshot_has_presentational_browser_retry_and_close(
 async fn mcp_oauth_error_snapshot_redacts_urls() {
     let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
-    let secret_url = "https://auth.example.test/authorize?state=secret-state";
+    let uppercase_url = "HTTPS://auth.example.test/authorize?state=UPPER-SECRET";
+    let mixed_case_url = "hTtPs://auth.example.test/authorize?state=MIXED-SECRET";
+    let second_url = "http://auth.example.test/authorize?state=SECOND-SECRET";
     chat.open_mcp_server_detail(server.clone());
     chat.open_mcp_oauth_starting(server.clone());
 
-    chat.show_mcp_oauth_error(server, format!("request failed at {secret_url}"));
+    chat.show_mcp_oauth_error(
+        server,
+        format!("request failed at {uppercase_url} then {mixed_case_url} and {second_url}"),
+    );
 
     let rendered = render_bottom_popup(&chat, /*width*/ 80);
-    assert!(!rendered.contains(secret_url));
-    assert!(!rendered.contains("secret-state"));
-    assert!(rendered.contains("[REDACTED]"));
+    assert!(!rendered.contains(uppercase_url));
+    assert!(!rendered.contains(mixed_case_url));
+    assert!(!rendered.contains(second_url));
+    assert!(!rendered.contains("UPPER-SECRET"));
+    assert!(!rendered.contains("MIXED-SECRET"));
+    assert!(!rendered.contains("SECOND-SECRET"));
+    assert_eq!(rendered.matches("[REDACTED]").count(), 3);
     assert_chatwidget_snapshot!("mcp_oauth_error", rendered);
 
     press(&mut chat, KeyCode::Enter);
@@ -367,16 +378,19 @@ async fn mcp_oauth_error_snapshot_redacts_urls() {
 }
 
 #[tokio::test]
-async fn esc_from_mcp_oauth_starting_and_progress_dismisses_the_whole_mcp_stack() {
-    for show_progress in [false, true] {
+async fn esc_from_mcp_oauth_views_dismisses_the_whole_mcp_stack() {
+    for stage in ["starting", "progress", "error"] {
         let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
         let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
         chat.open_mcp_picker_loading();
         chat.on_mcp_picker_inventory_loaded(Ok(vec![server.clone()]), /*focus_server*/ None);
         chat.open_mcp_server_detail(server.clone());
         chat.open_mcp_oauth_starting(server.clone());
-        if show_progress {
-            chat.show_mcp_oauth_progress(server);
+        match stage {
+            "starting" => {}
+            "progress" => chat.show_mcp_oauth_progress(server),
+            "error" => chat.show_mcp_oauth_error(server, "request failed".to_string()),
+            other => panic!("unexpected OAuth view stage {other}"),
         }
 
         press(&mut chat, KeyCode::Esc);
@@ -385,4 +399,36 @@ async fn esc_from_mcp_oauth_starting_and_progress_dismisses_the_whole_mcp_stack(
         chat.dismiss_mcp_views();
         assert!(chat.bottom_pane.no_modal_or_popup_active());
     }
+}
+
+#[tokio::test]
+async fn mcp_oauth_busy_feedback_snapshot() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+    chat.open_mcp_server_detail(server.clone());
+
+    chat.show_mcp_oauth_busy(server);
+
+    assert_chatwidget_snapshot!("mcp_oauth_busy", render_bottom_popup(&chat, /*width*/ 80));
+}
+
+#[tokio::test]
+async fn dismiss_mcp_views_preserves_unrelated_overlay() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+    chat.show_selection_view(crate::bottom_pane::SelectionViewParams {
+        view_id: Some("unrelated-test-overlay"),
+        title: Some("Unrelated overlay".to_string()),
+        ..Default::default()
+    });
+    chat.open_mcp_picker_loading();
+    chat.open_mcp_server_detail(server.clone());
+    chat.open_mcp_oauth_starting(server);
+
+    chat.dismiss_mcp_views();
+
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some("unrelated-test-overlay")
+    );
 }
