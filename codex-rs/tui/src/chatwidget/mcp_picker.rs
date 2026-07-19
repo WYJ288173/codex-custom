@@ -208,6 +208,7 @@ fn error_params(
     thread_id: Option<codex_protocol::ThreadId>,
     focus_server: Option<String>,
 ) -> SelectionViewParams {
+    let error = sanitize_mcp_oauth_message(&error);
     SelectionViewParams {
         view_id: Some(MCP_LIST_VIEW_ID),
         title: Some("MCP servers".to_string()),

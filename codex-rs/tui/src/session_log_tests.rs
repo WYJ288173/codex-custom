@@ -93,3 +93,54 @@ fn mcp_inventory_session_log_metadata_never_formats_errors_or_statuses() {
     assert!(!rendered.contains("picker failed"));
     assert!(!rendered.contains("inventory failed"));
 }
+
+#[test]
+fn mcp_navigation_session_log_metadata_never_formats_server_payloads() {
+    let secret_tool_name = "DO_NOT_PERSIST_SECRET_TOOL";
+    let tool = codex_protocol::mcp::Tool {
+        name: secret_tool_name.to_string(),
+        title: None,
+        description: Some("DO_NOT_PERSIST_SECRET_DESCRIPTION".to_string()),
+        input_schema: serde_json::json!({"secret": "DO_NOT_PERSIST_SCHEMA"}),
+        output_schema: None,
+        annotations: None,
+        icons: None,
+        meta: None,
+    };
+    let server = codex_app_server_protocol::McpServerStatus {
+        name: "sentry".to_string(),
+        server_info: None,
+        tools: [(secret_tool_name.to_string(), tool)].into_iter().collect(),
+        resources: Vec::new(),
+        resource_templates: Vec::new(),
+        auth_status: codex_app_server_protocol::McpAuthStatus::OAuth,
+    };
+    let detail = AppEvent::OpenMcpServerDetail {
+        server: server.clone(),
+    };
+    let tools = AppEvent::OpenMcpServerTools { server };
+
+    let metadata = [
+        safe_app_event_metadata(&detail),
+        safe_app_event_metadata(&tools),
+    ];
+
+    assert_eq!(
+        metadata,
+        [
+            Some(serde_json::json!({
+                "variant": "OpenMcpServerDetail",
+                "server": "sentry",
+                "tool_count": 1,
+            })),
+            Some(serde_json::json!({
+                "variant": "OpenMcpServerTools",
+                "server": "sentry",
+                "tool_count": 1,
+            })),
+        ]
+    );
+    let rendered = format!("{metadata:?}");
+    assert!(!rendered.contains("DO_NOT_PERSIST"));
+    assert!(!rendered.contains(secret_tool_name));
+}

@@ -44,9 +44,18 @@ fn oauth_completion(
     success: bool,
     error: Option<&str>,
 ) -> McpServerOauthLoginCompletedNotification {
+    oauth_completion_for_thread(name, None, success, error)
+}
+
+fn oauth_completion_for_thread(
+    name: &str,
+    thread_id: Option<codex_protocol::ThreadId>,
+    success: bool,
+    error: Option<&str>,
+) -> McpServerOauthLoginCompletedNotification {
     McpServerOauthLoginCompletedNotification {
         name: name.to_string(),
-        thread_id: None,
+        thread_id: thread_id.map(|thread_id| thread_id.to_string()),
         success,
         error: error.map(str::to_string),
     }
@@ -75,8 +84,13 @@ fn set_refreshing_oauth(app: &mut App, operation_id: &str, selected_server: McpS
 }
 
 #[test]
-fn oauth_login_request_uses_selected_server_and_unbounded_defaults() {
-    let request = mcp_oauth_login_request("mcp-oauth-operation", &server("sentry"));
+fn oauth_login_request_uses_selected_server_origin_thread_and_unbounded_defaults() {
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    let request = mcp_oauth_login_request(
+        "mcp-oauth-operation",
+        &server("sentry"),
+        Some(origin_thread_id),
+    );
 
     match request {
         ClientRequest::McpServerOauthLogin { request_id, params } => {
@@ -85,12 +99,37 @@ fn oauth_login_request_uses_selected_server_and_unbounded_defaults() {
                 RequestId::String("mcp-oauth-operation".to_string())
             );
             assert_eq!(params.name, "sentry");
-            assert_eq!(params.thread_id, None);
+            assert_eq!(params.thread_id, Some(origin_thread_id.to_string()));
             assert_eq!(params.scopes, None);
             assert_eq!(params.timeout_secs, None);
         }
         other => panic!("expected MCP OAuth login request, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn mcp_oauth_completion_for_another_origin_thread_is_ignored() {
+    let mut app = make_test_app().await;
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
+    let selected_server = server("sentry");
+    set_waiting_oauth(&mut app, "mcp-oauth-operation", selected_server.clone());
+
+    let refresh_operation =
+        app.handle_mcp_oauth_login_completed_transition(McpServerOauthLoginCompletedNotification {
+            name: "sentry".to_string(),
+            thread_id: Some(codex_protocol::ThreadId::new().to_string()),
+            success: true,
+            error: None,
+        });
+
+    assert_eq!(refresh_operation, None);
+    let pending = app
+        .pending_mcp_oauth
+        .as_ref()
+        .expect("a completion from another thread must preserve the pending operation");
+    assert_eq!(pending.server, selected_server);
+    assert_eq!(pending.phase, PendingMcpOauthPhase::WaitingForCompletion);
 }
 
 #[test]
@@ -655,15 +694,14 @@ async fn mcp_oauth_completion_failure_visible_is_sanitized_and_retryable() {
 #[tokio::test]
 async fn mcp_oauth_completion_failure_after_close_adds_one_safe_history_message() {
     let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
-    app.active_thread_id = Some(codex_protocol::ThreadId::new());
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
     set_waiting_oauth(&mut app, "mcp-oauth-operation", server("sentry"));
     let secret_error = format!("provider rejected state=DO_NOT_PERSIST at {SECRET_URL}");
 
-    let refresh_operation = app.handle_mcp_oauth_login_completed_transition(oauth_completion(
-        "sentry",
-        false,
-        Some(&secret_error),
-    ));
+    let refresh_operation = app.handle_mcp_oauth_login_completed_transition(
+        oauth_completion_for_thread("sentry", Some(origin_thread_id), false, Some(&secret_error)),
+    );
 
     assert_eq!(refresh_operation, None);
     assert!(app.pending_mcp_oauth.is_none());
@@ -935,7 +973,12 @@ async fn mcp_oauth_refresh_result_after_thread_switch_does_not_mutate_new_thread
         .begin_mcp_oauth(selected_server.clone())
         .expect("OAuth operation should begin");
     assert_eq!(
-        app.handle_mcp_oauth_login_completed_transition(oauth_completion("sentry", true, None)),
+        app.handle_mcp_oauth_login_completed_transition(oauth_completion_for_thread(
+            "sentry",
+            Some(origin_thread_id),
+            true,
+            None,
+        )),
         Some(operation_id.clone())
     );
     app.chat_widget.dismiss_mcp_views();
