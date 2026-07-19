@@ -76,6 +76,10 @@ impl App {
             ServerNotification::McpServerStatusUpdated(_) => {
                 self.refresh_mcp_startup_expected_servers_from_config();
             }
+            ServerNotification::McpServerOauthLoginCompleted(notification) => {
+                self.handle_mcp_oauth_login_completed(app_server_client, notification.clone());
+                return;
+            }
             ServerNotification::AccountRateLimitsUpdated(notification) => {
                 if matches!(
                     notification.rate_limits.rate_limit_reached_type,

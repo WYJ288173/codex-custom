@@ -421,7 +421,9 @@ async fn esc_from_mcp_oauth_views_dismisses_the_whole_mcp_stack() {
         match stage {
             "starting" => {}
             "progress" => chat.show_mcp_oauth_progress(server, "mcp-oauth-operation".to_string()),
-            "error" => chat.show_mcp_oauth_error(server, "request failed".to_string()),
+            "error" => {
+                let _ = chat.show_mcp_oauth_error(server, "request failed".to_string());
+            }
             other => panic!("unexpected OAuth view stage {other}"),
         }
 
@@ -463,4 +465,126 @@ async fn dismiss_mcp_views_preserves_unrelated_overlay() {
         chat.bottom_pane.active_view_id(),
         Some("unrelated-test-overlay")
     );
+}
+
+#[tokio::test]
+async fn mcp_oauth_refresh_error_retry_fetches_inventory_without_restarting_oauth() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    let server = status("sentry", McpAuthStatus::OAuth, false, &[]);
+    chat.open_mcp_picker_loading();
+    chat.open_mcp_server_detail(server.clone());
+    chat.open_mcp_oauth_starting(server.clone());
+
+    assert!(chat.show_mcp_oauth_refresh_error(
+        server,
+        "Authentication succeeded, but reconnecting failed. Restart may be needed.".to_string(),
+    ));
+    press(&mut chat, KeyCode::Enter);
+
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::FetchMcpPickerInventory {
+            thread_id: Some(actual_thread_id),
+            focus_server: Some(server),
+        }) if actual_thread_id == thread_id && server == "sentry"
+    );
+    assert!(rx.try_recv().is_err(), "retry must not emit StartMcpOauth");
+}
+
+#[tokio::test]
+async fn mcp_oauth_refresh_retry_restores_exact_fresh_server_detail() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let mut fresh_server = status("sentry", McpAuthStatus::OAuth, true, &[]);
+    fresh_server
+        .tools
+        .insert("fresh_tool".to_string(), tool("fresh_tool"));
+    chat.open_mcp_picker_loading();
+
+    chat.on_mcp_picker_inventory_loaded(
+        Ok(vec![
+            status("Sentry", McpAuthStatus::NotLoggedIn, false, &[]),
+            fresh_server,
+        ]),
+        Some("sentry".to_string()),
+    );
+
+    assert_eq!(
+        chat.bottom_pane.active_view_id(),
+        Some(crate::chatwidget::mcp_picker::MCP_DETAIL_VIEW_ID)
+    );
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(rendered.contains("MCP server · sentry"));
+    assert!(rendered.contains("Authentication: OAuth"));
+    assert!(rendered.contains("View tools (1)"));
+}
+
+#[tokio::test]
+async fn mcp_oauth_refresh_error_snapshot_contains_retry_close_and_restart_guidance() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::OAuth, false, &[]);
+    chat.open_mcp_picker_loading();
+    chat.open_mcp_server_detail(server.clone());
+    chat.open_mcp_oauth_starting(server.clone());
+
+    assert!(chat.show_mcp_oauth_refresh_error(
+        server,
+        "Authentication succeeded, but reconnecting failed. Restart may be needed.".to_string(),
+    ));
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(rendered.contains("Retry"));
+    assert!(rendered.contains("Close"));
+    assert!(rendered.contains("Restart"));
+    assert_chatwidget_snapshot!("mcp_oauth_refresh_error", rendered);
+}
+
+#[tokio::test]
+async fn mcp_oauth_refresh_inventory_retry_failure_stays_safe_and_retryable() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let thread_id = ThreadId::new();
+    chat.thread_id = Some(thread_id);
+    chat.open_mcp_picker_loading();
+    let secret = "https://oauth.example/authorize?state=DO_NOT_PERSIST";
+
+    chat.on_mcp_picker_inventory_loaded(
+        Err(format!("inventory failed at {secret}")),
+        Some("sentry".to_string()),
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 80);
+    assert!(rendered.contains("Authentication succeeded"));
+    assert!(rendered.to_ascii_lowercase().contains("restart"));
+    assert!(rendered.contains("Retry"));
+    assert!(!rendered.contains(secret));
+    assert!(!rendered.contains("DO_NOT_PERSIST"));
+    press(&mut chat, KeyCode::Enter);
+    assert_matches!(
+        rx.try_recv(),
+        Ok(AppEvent::FetchMcpPickerInventory {
+            thread_id: Some(actual_thread_id),
+            focus_server: Some(server),
+        }) if actual_thread_id == thread_id && server == "sentry"
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn mcp_oauth_error_sanitizer_redacts_header_token_and_environment_values() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+    chat.open_mcp_server_detail(server.clone());
+    chat.open_mcp_oauth_starting(server.clone());
+
+    let _ = chat.show_mcp_oauth_error(
+        server,
+        "Authorization: Bearer DO_NOT_PERSIST; token: TOKEN_SECRET env=ENV_SECRET".to_string(),
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 100);
+    assert!(!rendered.contains("DO_NOT_PERSIST"));
+    assert!(!rendered.contains("TOKEN_SECRET"));
+    assert!(!rendered.contains("ENV_SECRET"));
+    assert!(rendered.contains("[REDACTED]"));
 }
