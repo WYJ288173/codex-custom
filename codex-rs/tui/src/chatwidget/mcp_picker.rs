@@ -39,7 +39,7 @@ fn tool_count_label(count: usize) -> String {
     }
 }
 
-fn oauth_action(auth_status: &McpAuthStatus) -> Option<&'static str> {
+fn oauth_action(auth_status: McpAuthStatus) -> Option<&'static str> {
     match auth_status {
         McpAuthStatus::NotLoggedIn => Some("Authenticate"),
         McpAuthStatus::OAuth => Some("Re-authenticate"),
@@ -128,7 +128,7 @@ fn detail_params(server: McpServerStatus) -> SelectionViewParams {
             ..Default::default()
         });
     }
-    if let Some(action) = oauth_action(&server.auth_status) {
+    if let Some(action) = oauth_action(server.auth_status) {
         let oauth_server = server.clone();
         items.push(SelectionItem {
             name: action.to_string(),
@@ -227,6 +227,39 @@ fn error_params(
     }
 }
 
+fn oauth_refresh_error_params(
+    server: McpServerStatus,
+    message: String,
+    thread_id: Option<codex_protocol::ThreadId>,
+) -> SelectionViewParams {
+    let focus_server = server.name.clone();
+    SelectionViewParams {
+        view_id: Some(MCP_OAUTH_VIEW_ID),
+        title: Some(format!("MCP reconnect failed · {}", server.name)),
+        subtitle: Some(sanitize_mcp_oauth_message(&message)),
+        items: vec![
+            SelectionItem {
+                name: "Retry".to_string(),
+                actions: vec![Box::new(move |tx| {
+                    tx.send(AppEvent::FetchMcpPickerInventory {
+                        thread_id,
+                        focus_server: Some(focus_server.clone()),
+                    });
+                })],
+                ..Default::default()
+            },
+            SelectionItem {
+                name: "Close".to_string(),
+                actions: vec![Box::new(|tx| tx.send(AppEvent::DismissMcpViews))],
+                ..Default::default()
+            },
+        ],
+        footer_hint: Some(Line::from("Enter Select  Esc Close")),
+        on_cancel: Some(Box::new(|tx| tx.send(AppEvent::DismissMcpViews))),
+        ..Default::default()
+    }
+}
+
 fn oauth_starting_params(server: McpServerStatus) -> SelectionViewParams {
     SelectionViewParams {
         view_id: Some(MCP_OAUTH_VIEW_ID),
@@ -295,7 +328,7 @@ fn oauth_error_params(server: McpServerStatus, error: String) -> SelectionViewPa
     SelectionViewParams {
         view_id: Some(MCP_OAUTH_VIEW_ID),
         title: Some(format!("Authentication failed · {}", server.name)),
-        subtitle: Some(redact_urls(&error)),
+        subtitle: Some(sanitize_mcp_oauth_message(&error)),
         items: vec![
             SelectionItem {
                 name: "Retry".to_string(),
@@ -343,6 +376,60 @@ fn redact_urls(error: &str) -> String {
     }
 }
 
+pub(crate) fn sanitize_mcp_oauth_message(message: &str) -> String {
+    let mut sanitized = redact_urls(message);
+    for prefix in [
+        "access_token=",
+        "access_token:",
+        "refresh_token=",
+        "refresh_token:",
+        "authorization=",
+        "authorization:",
+        "credential=",
+        "credential:",
+        "environment=",
+        "environment:",
+        "token=",
+        "token:",
+        "state=",
+        "state:",
+        "header=",
+        "header:",
+        "env=",
+        "env:",
+    ] {
+        sanitized = redact_sensitive_values(&sanitized, prefix);
+    }
+    sanitized
+}
+
+fn redact_sensitive_values(message: &str, prefix: &str) -> String {
+    let mut redacted = String::new();
+    let mut remaining = message;
+    loop {
+        let lowercase = remaining.to_ascii_lowercase();
+        let Some(start) = lowercase.find(prefix) else {
+            redacted.push_str(remaining);
+            return redacted;
+        };
+        let value_start = start + prefix.len();
+        redacted.push_str(&remaining[..value_start]);
+        redacted.push_str("[REDACTED]");
+        let value = &remaining[value_start..];
+        let secret = value.trim_start();
+        let end = if prefix.starts_with("authorization") || prefix.starts_with("header") {
+            secret.find([',', ';', '&', '\n']).unwrap_or(secret.len())
+        } else {
+            secret
+                .find(|character: char| {
+                    character.is_whitespace() || matches!(character, ',' | ';' | '&')
+                })
+                .unwrap_or(secret.len())
+        };
+        remaining = &secret[end..];
+    }
+}
+
 impl ChatWidget {
     pub(crate) fn open_mcp_picker_loading(&mut self) {
         let params = loading_params();
@@ -364,10 +451,46 @@ impl ChatWidget {
             return;
         }
 
-        let params = match result {
-            Ok(statuses) if statuses.is_empty() => empty_params(),
-            Ok(statuses) => list_params(statuses),
-            Err(error) => error_params(error, self.thread_id(), focus_server),
+        let params = match (result, focus_server) {
+            (Ok(statuses), None) if statuses.is_empty() => empty_params(),
+            (Ok(statuses), Some(focus_server)) => {
+                match statuses
+                    .iter()
+                    .find(|status| status.name == focus_server)
+                    .cloned()
+                {
+                    Some(server) => detail_params(server),
+                    None => oauth_refresh_error_params(
+                        McpServerStatus {
+                            name: focus_server,
+                            server_info: None,
+                            tools: Default::default(),
+                            resources: Vec::new(),
+                            resource_templates: Vec::new(),
+                            auth_status: McpAuthStatus::Unsupported,
+                        },
+                        "Authentication succeeded, but reconnection failed. Restart Codex if needed; the server was absent from the refreshed MCP inventory.".to_string(),
+                        self.thread_id(),
+                    ),
+                }
+            }
+            (Ok(statuses), None) => list_params(statuses),
+            (Err(error), Some(focus_server)) => oauth_refresh_error_params(
+                McpServerStatus {
+                    name: focus_server,
+                    server_info: None,
+                    tools: Default::default(),
+                    resources: Vec::new(),
+                    resource_templates: Vec::new(),
+                    auth_status: McpAuthStatus::Unsupported,
+                },
+                format!(
+                    "Authentication succeeded, but reconnection failed. Restart Codex if needed. Details: {}",
+                    sanitize_mcp_oauth_message(&error)
+                ),
+                self.thread_id(),
+            ),
+            (Err(error), None) => error_params(error, self.thread_id(), /*focus_server*/ None),
         };
         let _ = self
             .bottom_pane
@@ -411,7 +534,10 @@ impl ChatWidget {
     }
 
     pub(crate) fn mcp_oauth_browser_error_message(error: &str) -> String {
-        format!("Failed to open browser: {}", redact_urls(error))
+        format!(
+            "Failed to open browser: {}",
+            sanitize_mcp_oauth_message(error)
+        )
     }
 
     pub(crate) fn show_mcp_oauth_browser_error(
@@ -422,7 +548,7 @@ impl ChatWidget {
     ) -> bool {
         self.bottom_pane.replace_selection_view_if_present(
             MCP_OAUTH_VIEW_ID,
-            oauth_progress_params(server, operation_id, redact_urls(&message)),
+            oauth_progress_params(server, operation_id, sanitize_mcp_oauth_message(&message)),
         )
     }
 
@@ -439,11 +565,67 @@ impl ChatWidget {
             .replace_selection_view_if_present(MCP_DETAIL_VIEW_ID, oauth_busy_params(server));
     }
 
-    pub(crate) fn show_mcp_oauth_error(&mut self, server: McpServerStatus, error: String) {
-        let _ = self.bottom_pane.replace_selection_view_if_present(
-            MCP_OAUTH_VIEW_ID,
-            oauth_error_params(server, error),
-        );
+    pub(crate) fn show_mcp_oauth_error(&mut self, server: McpServerStatus, error: String) -> bool {
+        let params = oauth_error_params(server.clone(), error.clone());
+        if self
+            .bottom_pane
+            .replace_selection_view_if_present(MCP_OAUTH_VIEW_ID, params)
+        {
+            return true;
+        }
+        self.bottom_pane
+            .replace_selection_view_if_present(MCP_LIST_VIEW_ID, oauth_error_params(server, error))
+    }
+
+    pub(crate) fn show_mcp_oauth_refresh_error(
+        &mut self,
+        server: McpServerStatus,
+        message: String,
+    ) -> bool {
+        let params = oauth_refresh_error_params(server.clone(), message.clone(), self.thread_id());
+        if self
+            .bottom_pane
+            .replace_selection_view_if_present(MCP_OAUTH_VIEW_ID, params)
+        {
+            return true;
+        }
+        self.bottom_pane.replace_selection_view_if_present(
+            MCP_LIST_VIEW_ID,
+            oauth_refresh_error_params(server, message, self.thread_id()),
+        )
+    }
+
+    pub(crate) fn finish_mcp_oauth_refresh(
+        &mut self,
+        statuses: Vec<McpServerStatus>,
+        fresh_server: McpServerStatus,
+    ) -> bool {
+        let has_oauth = self.bottom_pane.has_view_id(MCP_OAUTH_VIEW_ID);
+        let has_list = self.bottom_pane.has_view_id(MCP_LIST_VIEW_ID);
+        if !has_oauth && !has_list {
+            return false;
+        }
+
+        if has_list {
+            let _ = self
+                .bottom_pane
+                .replace_selection_view_if_present(MCP_LIST_VIEW_ID, list_params(statuses));
+        }
+        if has_oauth {
+            let _ = self
+                .bottom_pane
+                .replace_selection_view_if_present(MCP_OAUTH_VIEW_ID, detail_params(fresh_server));
+        } else {
+            let _ = self
+                .bottom_pane
+                .replace_selection_view_if_present(MCP_LIST_VIEW_ID, detail_params(fresh_server));
+        }
+        true
+    }
+
+    pub(crate) fn open_mcp_picker_refresh_loading(&mut self) {
+        while self.bottom_pane.dismiss_view_by_id(MCP_OAUTH_VIEW_ID) {}
+        self.open_mcp_picker_loading();
     }
 
     pub(crate) fn dismiss_mcp_views(&mut self) {

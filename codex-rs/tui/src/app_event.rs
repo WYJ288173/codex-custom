@@ -142,6 +142,62 @@ impl std::fmt::Debug for McpOauthAuthorizationUrl {
     }
 }
 
+pub(crate) struct McpOauthLoginResult(Result<McpOauthAuthorizationUrl, String>);
+
+impl McpOauthLoginResult {
+    pub(crate) fn new(result: Result<McpOauthAuthorizationUrl, String>) -> Self {
+        Self(result)
+    }
+
+    pub(crate) fn is_ok(&self) -> bool {
+        self.0.is_ok()
+    }
+
+    pub(crate) fn into_result(self) -> Result<McpOauthAuthorizationUrl, String> {
+        self.0
+    }
+}
+
+impl From<Result<McpOauthAuthorizationUrl, String>> for McpOauthLoginResult {
+    fn from(result: Result<McpOauthAuthorizationUrl, String>) -> Self {
+        Self::new(result)
+    }
+}
+
+impl std::fmt::Debug for McpOauthLoginResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Ok(_) => f.write_str("McpOauthLoginResult::Ok([REDACTED])"),
+            Err(_) => f.write_str("McpOauthLoginResult::Err([REDACTED])"),
+        }
+    }
+}
+
+pub(crate) struct McpOauthRefreshResult(Result<Vec<McpServerStatus>, String>);
+
+impl McpOauthRefreshResult {
+    pub(crate) fn new(result: Result<Vec<McpServerStatus>, String>) -> Self {
+        Self(result)
+    }
+
+    pub(crate) fn is_ok(&self) -> bool {
+        self.0.is_ok()
+    }
+
+    pub(crate) fn into_result(self) -> Result<Vec<McpServerStatus>, String> {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for McpOauthRefreshResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Ok(_) => f.write_str("McpOauthRefreshResult::Ok([REDACTED])"),
+            Err(_) => f.write_str("McpOauthRefreshResult::Err([REDACTED])"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum PluginLocation {
     Local { marketplace_path: AbsolutePathBuf },
@@ -809,12 +865,18 @@ pub(crate) enum AppEvent {
     /// Result of requesting an MCP OAuth authorization URL.
     McpOauthLoginStarted {
         operation_id: String,
-        result: Result<McpOauthAuthorizationUrl, String>,
+        result: McpOauthLoginResult,
     },
 
     /// Open the in-memory authorization URL for the matching pending MCP OAuth operation.
     OpenPendingMcpOauthUrl {
         operation_id: String,
+    },
+
+    /// Result of refreshing MCP connections and loading fresh OAuth-aware inventory.
+    McpOauthRefreshFinished {
+        operation_id: String,
+        result: McpOauthRefreshResult,
     },
 
     /// Close every view belonging to the MCP manager without cancelling OAuth.

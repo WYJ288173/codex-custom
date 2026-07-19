@@ -969,7 +969,11 @@ impl App {
                 thread_id,
                 focus_server,
             } => {
-                self.chat_widget.open_mcp_picker_loading();
+                if focus_server.is_some() {
+                    self.chat_widget.open_mcp_picker_refresh_loading();
+                } else {
+                    self.chat_widget.open_mcp_picker_loading();
+                }
                 self.fetch_mcp_picker_inventory(app_server, thread_id, focus_server);
             }
             AppEvent::McpPickerInventoryLoaded {
@@ -996,6 +1000,12 @@ impl App {
             }
             AppEvent::OpenPendingMcpOauthUrl { operation_id } => {
                 self.open_pending_mcp_oauth_url(operation_id);
+            }
+            AppEvent::McpOauthRefreshFinished {
+                operation_id,
+                result,
+            } => {
+                self.handle_mcp_oauth_refresh_finished(operation_id, result);
             }
             AppEvent::DismissMcpViews => {
                 self.chat_widget.dismiss_mcp_views();
