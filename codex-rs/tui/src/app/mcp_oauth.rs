@@ -1,11 +1,17 @@
 use super::App;
 use crate::app_event::AppEvent;
 use crate::app_event::McpOauthAuthorizationUrl;
+use crate::app_event::McpOauthLoginResult;
+use crate::app_event::McpOauthRefreshResult;
 use crate::app_server_session::AppServerSession;
+use crate::chatwidget::sanitize_mcp_oauth_message;
 use codex_app_server_protocol::ClientRequest;
+use codex_app_server_protocol::McpServerOauthLoginCompletedNotification;
 use codex_app_server_protocol::McpServerOauthLoginParams;
 use codex_app_server_protocol::McpServerOauthLoginResponse;
+use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::McpServerStatus;
+use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::RequestId;
 use std::fmt::Display;
 use uuid::Uuid;
@@ -14,7 +20,6 @@ use uuid::Uuid;
 pub(super) enum PendingMcpOauthPhase {
     RequestingUrl,
     WaitingForCompletion,
-    #[allow(dead_code)]
     Refreshing,
 }
 
@@ -47,7 +52,7 @@ impl App {
                 .map_err(|error| error.to_string());
             app_event_tx.send(AppEvent::McpOauthLoginStarted {
                 operation_id,
-                result,
+                result: McpOauthLoginResult::new(result),
             });
         });
     }
@@ -69,21 +74,22 @@ impl App {
         Some(operation_id)
     }
 
-    pub(super) fn handle_mcp_oauth_login_started(
-        &mut self,
-        operation_id: String,
-        result: Result<McpOauthAuthorizationUrl, String>,
-    ) {
+    pub(super) fn handle_mcp_oauth_login_started<R>(&mut self, operation_id: String, result: R)
+    where
+        R: Into<McpOauthLoginResult>,
+    {
         let Some(pending) = self.pending_mcp_oauth.as_mut() else {
             tracing::debug!(%operation_id, "ignored MCP OAuth login result without a pending operation");
             return;
         };
-        if pending.operation_id != operation_id {
+        if pending.operation_id != operation_id
+            || pending.phase != PendingMcpOauthPhase::RequestingUrl
+        {
             tracing::debug!(%operation_id, "ignored stale MCP OAuth login result");
             return;
         }
 
-        match result {
+        match result.into().into_result() {
             Ok(authorization_url) => {
                 pending.authorization_url = Some(authorization_url);
                 pending.phase = PendingMcpOauthPhase::WaitingForCompletion;
@@ -96,8 +102,153 @@ impl App {
             Err(error) => {
                 let server = pending.server.clone();
                 self.pending_mcp_oauth = None;
-                self.chat_widget.show_mcp_oauth_error(server, error);
+                let message = sanitize_mcp_oauth_message(&error);
+                if !self
+                    .chat_widget
+                    .show_mcp_oauth_error(server.clone(), message.clone())
+                {
+                    self.chat_widget.add_error_message(format!(
+                        "Authentication failed for MCP server '{}': {message}",
+                        server.name
+                    ));
+                }
             }
+        }
+    }
+
+    pub(super) fn handle_mcp_oauth_login_completed(
+        &mut self,
+        app_server: &AppServerSession,
+        notification: McpServerOauthLoginCompletedNotification,
+    ) {
+        let Some(operation_id) = self.handle_mcp_oauth_login_completed_transition(notification)
+        else {
+            return;
+        };
+        self.spawn_mcp_oauth_refresh(app_server, operation_id);
+    }
+
+    fn handle_mcp_oauth_login_completed_transition(
+        &mut self,
+        notification: McpServerOauthLoginCompletedNotification,
+    ) -> Option<String> {
+        let Some(pending) = self.pending_mcp_oauth.as_mut() else {
+            tracing::debug!(server = %notification.name, "ignored MCP OAuth completion without a pending operation");
+            return None;
+        };
+        if pending.server.name != notification.name
+            || pending.phase == PendingMcpOauthPhase::Refreshing
+        {
+            tracing::debug!(server = %notification.name, "ignored stale MCP OAuth completion");
+            return None;
+        }
+
+        if !notification.success {
+            let server = pending.server.clone();
+            let error = notification
+                .error
+                .as_deref()
+                .unwrap_or("Authentication failed or timed out.");
+            let message = sanitize_mcp_oauth_message(error);
+            self.pending_mcp_oauth = None;
+            if !self
+                .chat_widget
+                .show_mcp_oauth_error(server.clone(), message.clone())
+            {
+                self.chat_widget.add_error_message(format!(
+                    "Authentication failed for MCP server '{}': {message}",
+                    server.name
+                ));
+            }
+            return None;
+        }
+
+        pending.authorization_url = None;
+        pending.phase = PendingMcpOauthPhase::Refreshing;
+        Some(pending.operation_id.clone())
+    }
+
+    fn spawn_mcp_oauth_refresh(&self, app_server: &AppServerSession, operation_id: String) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        let thread_id = self.mcp_inventory_request_thread_id(self.current_displayed_thread_id());
+        tokio::spawn(async move {
+            let result = async {
+                let _: McpServerRefreshResponse = request_handle
+                    .request_typed(mcp_oauth_refresh_request(&operation_id))
+                    .await
+                    .map_err(|error| format!("MCP refresh failed: {error}"))?;
+                super::background_requests::fetch_all_mcp_server_statuses(
+                    request_handle,
+                    McpServerStatusDetail::ToolsAndAuthOnly,
+                    thread_id,
+                )
+                .await
+                .map_err(|error| error.to_string())
+            }
+            .await;
+            app_event_tx.send(AppEvent::McpOauthRefreshFinished {
+                operation_id,
+                result: McpOauthRefreshResult::new(result),
+            });
+        });
+    }
+
+    pub(super) fn handle_mcp_oauth_refresh_finished(
+        &mut self,
+        operation_id: String,
+        result: McpOauthRefreshResult,
+    ) {
+        let Some(pending) = self.pending_mcp_oauth.as_ref() else {
+            tracing::debug!(%operation_id, "ignored MCP OAuth refresh result without a pending operation");
+            return;
+        };
+        if pending.operation_id != operation_id || pending.phase != PendingMcpOauthPhase::Refreshing
+        {
+            tracing::debug!(%operation_id, "ignored stale MCP OAuth refresh result");
+            return;
+        }
+
+        let server = pending.server.clone();
+        match result.into_result() {
+            Ok(statuses) => {
+                if let Some(fresh_server) = statuses
+                    .iter()
+                    .find(|status| status.name == server.name)
+                    .cloned()
+                {
+                    if !self
+                        .chat_widget
+                        .finish_mcp_oauth_refresh(statuses, fresh_server)
+                    {
+                        self.chat_widget.add_info_message(
+                            format!("Authenticated MCP server '{}'.", server.name),
+                            /*hint*/ None,
+                        );
+                    }
+                } else {
+                    self.report_mcp_oauth_reconnect_failure(
+                        server,
+                        "the server was absent from the refreshed MCP inventory",
+                    );
+                }
+            }
+            Err(error) => self.report_mcp_oauth_reconnect_failure(server, &error),
+        }
+        self.pending_mcp_oauth = None;
+    }
+
+    fn report_mcp_oauth_reconnect_failure(&mut self, server: McpServerStatus, error: &str) {
+        let error = sanitize_mcp_oauth_message(error);
+        let message = format!(
+            "Authentication succeeded, but reconnection failed. Restart Codex if MCP server '{}' does not reconnect. Details: {error}",
+            server.name
+        );
+        if !self
+            .chat_widget
+            .show_mcp_oauth_refresh_error(server, message.clone())
+        {
+            self.chat_widget.add_error_message(message);
         }
     }
 
@@ -146,6 +297,13 @@ fn mcp_oauth_login_request(operation_id: &str, server: &McpServerStatus) -> Clie
             scopes: None,
             timeout_secs: None,
         },
+    }
+}
+
+fn mcp_oauth_refresh_request(operation_id: &str) -> ClientRequest {
+    ClientRequest::McpServerRefresh {
+        request_id: RequestId::String(format!("{operation_id}-refresh")),
+        params: None,
     }
 }
 

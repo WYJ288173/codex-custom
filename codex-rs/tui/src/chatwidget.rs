@@ -362,6 +362,7 @@ mod interrupts;
 use self::interrupts::InterruptManager;
 mod keymap_picker;
 mod mcp_picker;
+pub(crate) use mcp_picker::sanitize_mcp_oauth_message;
 mod mcp_startup;
 use self::mcp_startup::McpStartupStatus;
 mod pets;

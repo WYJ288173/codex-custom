@@ -125,6 +125,18 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
         return;
     }
 
+    if let Some((variant, ok)) = oauth_app_event_metadata(event) {
+        let value = json!({
+            "ts": now_ts(),
+            "dir": "to_tui",
+            "kind": "app_event",
+            "variant": variant,
+            "ok": ok,
+        });
+        LOGGER.write_json_line(value);
+        return;
+    }
+
     match event {
         AppEvent::NewSession { .. } => {
             let value = json!({
@@ -210,6 +222,21 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
     }
 }
 
+fn oauth_app_event_metadata(event: &AppEvent) -> Option<(&'static str, Option<bool>)> {
+    match event {
+        AppEvent::StartMcpOauth { .. } => Some(("StartMcpOauth", None)),
+        AppEvent::McpOauthLoginStarted { result, .. } => {
+            Some(("McpOauthLoginStarted", Some(result.is_ok())))
+        }
+        AppEvent::OpenPendingMcpOauthUrl { .. } => Some(("OpenPendingMcpOauthUrl", None)),
+        AppEvent::McpOauthRefreshFinished { result, .. } => {
+            Some(("McpOauthRefreshFinished", Some(result.is_ok())))
+        }
+        AppEvent::DismissMcpViews => Some(("DismissMcpViews", None)),
+        _ => None,
+    }
+}
+
 pub(crate) fn log_outbound_op(op: &AppCommand) {
     if !LOGGER.is_enabled() {
         return;
@@ -241,3 +268,7 @@ where
     });
     LOGGER.write_json_line(value);
 }
+
+#[cfg(test)]
+#[path = "session_log_tests.rs"]
+mod tests;

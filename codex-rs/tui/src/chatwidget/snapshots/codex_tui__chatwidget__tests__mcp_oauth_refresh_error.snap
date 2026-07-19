@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 541
+expression: rendered
+---
+  MCP reconnect failed · sentry
+  Authentication succeeded, but reconnecting failed. Restart may be needed.
+
+› 1. Retry
+  2. Close
+
+  Enter Select  Esc Close

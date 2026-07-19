@@ -81,7 +81,10 @@ impl App {
         });
     }
 
-    fn mcp_inventory_request_thread_id(&self, thread_id: Option<ThreadId>) -> Option<ThreadId> {
+    pub(super) fn mcp_inventory_request_thread_id(
+        &self,
+        thread_id: Option<ThreadId>,
+    ) -> Option<ThreadId> {
         thread_id.filter(|thread_id| {
             self.active_thread_id == Some(*thread_id)
                 && self
