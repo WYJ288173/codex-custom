@@ -377,57 +377,26 @@ fn redact_urls(error: &str) -> String {
 }
 
 pub(crate) fn sanitize_mcp_oauth_message(message: &str) -> String {
-    let mut sanitized = redact_urls(message);
-    for prefix in [
-        "access_token=",
-        "access_token:",
-        "refresh_token=",
-        "refresh_token:",
-        "authorization=",
-        "authorization:",
-        "credential=",
-        "credential:",
-        "environment=",
-        "environment:",
-        "token=",
-        "token:",
-        "state=",
-        "state:",
-        "header=",
-        "header:",
-        "env=",
-        "env:",
-    ] {
-        sanitized = redact_sensitive_values(&sanitized, prefix);
+    let sanitized = redact_urls(message);
+    let lowercase = sanitized.to_ascii_lowercase();
+    if [
+        "access_token",
+        "refresh_token",
+        "authorization",
+        "credential",
+        "environment",
+        "token",
+        "state",
+        "headers",
+        "header",
+        "env",
+    ]
+    .iter()
+    .any(|marker| lowercase.contains(marker))
+    {
+        return "[REDACTED]".to_string();
     }
     sanitized
-}
-
-fn redact_sensitive_values(message: &str, prefix: &str) -> String {
-    let mut redacted = String::new();
-    let mut remaining = message;
-    loop {
-        let lowercase = remaining.to_ascii_lowercase();
-        let Some(start) = lowercase.find(prefix) else {
-            redacted.push_str(remaining);
-            return redacted;
-        };
-        let value_start = start + prefix.len();
-        redacted.push_str(&remaining[..value_start]);
-        redacted.push_str("[REDACTED]");
-        let value = &remaining[value_start..];
-        let secret = value.trim_start();
-        let end = if prefix.starts_with("authorization") || prefix.starts_with("header") {
-            secret.find([',', ';', '&', '\n']).unwrap_or(secret.len())
-        } else {
-            secret
-                .find(|character: char| {
-                    character.is_whitespace() || matches!(character, ',' | ';' | '&')
-                })
-                .unwrap_or(secret.len())
-        };
-        remaining = &secret[end..];
-    }
 }
 
 impl ChatWidget {

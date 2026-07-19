@@ -13,6 +13,7 @@ use codex_app_server_protocol::McpServerRefreshResponse;
 use codex_app_server_protocol::McpServerStatus;
 use codex_app_server_protocol::McpServerStatusDetail;
 use codex_app_server_protocol::RequestId;
+use codex_protocol::ThreadId;
 use std::fmt::Display;
 use uuid::Uuid;
 
@@ -27,6 +28,7 @@ pub(super) enum PendingMcpOauthPhase {
 pub(super) struct PendingMcpOauth {
     pub(super) operation_id: String,
     pub(super) server: McpServerStatus,
+    pub(super) origin_thread_id: Option<ThreadId>,
     pub(super) authorization_url: Option<McpOauthAuthorizationUrl>,
     pub(super) phase: PendingMcpOauthPhase,
 }
@@ -64,9 +66,11 @@ impl App {
         }
 
         let operation_id = format!("mcp-oauth-{}", Uuid::new_v4());
+        let origin_thread_id = self.current_displayed_thread_id();
         self.pending_mcp_oauth = Some(PendingMcpOauth {
             operation_id: operation_id.clone(),
             server: server.clone(),
+            origin_thread_id,
             authorization_url: None,
             phase: PendingMcpOauthPhase::RequestingUrl,
         });
@@ -132,6 +136,7 @@ impl App {
         &mut self,
         notification: McpServerOauthLoginCompletedNotification,
     ) -> Option<String> {
+        let current_thread_id = self.current_displayed_thread_id();
         let Some(pending) = self.pending_mcp_oauth.as_mut() else {
             tracing::debug!(server = %notification.name, "ignored MCP OAuth completion without a pending operation");
             return None;
@@ -140,6 +145,11 @@ impl App {
             || pending.phase == PendingMcpOauthPhase::Refreshing
         {
             tracing::debug!(server = %notification.name, "ignored stale MCP OAuth completion");
+            return None;
+        }
+        if pending.origin_thread_id != current_thread_id {
+            tracing::debug!(server = %notification.name, "discarded MCP OAuth completion after thread switch");
+            self.pending_mcp_oauth = None;
             return None;
         }
 
@@ -169,9 +179,17 @@ impl App {
     }
 
     fn spawn_mcp_oauth_refresh(&self, app_server: &AppServerSession, operation_id: String) {
+        let Some(origin_thread_id) = self
+            .pending_mcp_oauth
+            .as_ref()
+            .filter(|pending| pending.operation_id == operation_id)
+            .map(|pending| pending.origin_thread_id)
+        else {
+            return;
+        };
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
-        let thread_id = self.mcp_inventory_request_thread_id(self.current_displayed_thread_id());
+        let thread_id = self.mcp_inventory_request_thread_id(origin_thread_id);
         tokio::spawn(async move {
             let result = async {
                 let _: McpServerRefreshResponse = request_handle
@@ -189,6 +207,7 @@ impl App {
             .await;
             app_event_tx.send(AppEvent::McpOauthRefreshFinished {
                 operation_id,
+                thread_id: origin_thread_id,
                 result: McpOauthRefreshResult::new(result),
             });
         });
@@ -197,6 +216,7 @@ impl App {
     pub(super) fn handle_mcp_oauth_refresh_finished(
         &mut self,
         operation_id: String,
+        thread_id: Option<ThreadId>,
         result: McpOauthRefreshResult,
     ) {
         let Some(pending) = self.pending_mcp_oauth.as_ref() else {
@@ -206,6 +226,14 @@ impl App {
         if pending.operation_id != operation_id || pending.phase != PendingMcpOauthPhase::Refreshing
         {
             tracing::debug!(%operation_id, "ignored stale MCP OAuth refresh result");
+            return;
+        }
+
+        if pending.origin_thread_id != thread_id
+            || pending.origin_thread_id != self.current_displayed_thread_id()
+        {
+            tracing::debug!(%operation_id, "discarded MCP OAuth refresh result after thread switch");
+            self.pending_mcp_oauth = None;
             return;
         }
 
