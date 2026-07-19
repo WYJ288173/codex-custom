@@ -53,18 +53,22 @@ fn oauth_completion(
 }
 
 fn set_waiting_oauth(app: &mut App, operation_id: &str, selected_server: McpServerStatus) {
+    let origin_thread_id = app.current_displayed_thread_id();
     app.pending_mcp_oauth = Some(PendingMcpOauth {
         operation_id: operation_id.to_string(),
         server: selected_server,
+        origin_thread_id,
         authorization_url: Some(McpOauthAuthorizationUrl::new(SECRET_URL.to_string())),
         phase: PendingMcpOauthPhase::WaitingForCompletion,
     });
 }
 
 fn set_refreshing_oauth(app: &mut App, operation_id: &str, selected_server: McpServerStatus) {
+    let origin_thread_id = app.current_displayed_thread_id();
     app.pending_mcp_oauth = Some(PendingMcpOauth {
         operation_id: operation_id.to_string(),
         server: selected_server,
+        origin_thread_id,
         authorization_url: None,
         phase: PendingMcpOauthPhase::Refreshing,
     });
@@ -477,6 +481,60 @@ async fn mcp_oauth_completion_for_another_server_is_ignored() {
 }
 
 #[tokio::test]
+async fn mcp_oauth_completion_failure_after_thread_switch_does_not_mutate_new_thread() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
+    let operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should begin");
+    app.handle_mcp_oauth_login_started(
+        operation_id.clone(),
+        McpOauthLoginResult::new(Ok(McpOauthAuthorizationUrl::new(SECRET_URL.to_string()))),
+    );
+    assert_matches::assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::OpenPendingMcpOauthUrl { operation_id: opened })
+            if opened == operation_id
+    );
+    app.chat_widget.dismiss_mcp_views();
+    app.active_thread_id = Some(codex_protocol::ThreadId::new());
+
+    let refresh_operation = app.handle_mcp_oauth_login_completed_transition(oauth_completion(
+        "sentry",
+        false,
+        Some("provider rejected login"),
+    ));
+
+    assert_eq!(refresh_operation, None);
+    assert!(app.pending_mcp_oauth.is_none());
+    assert!(app.chat_widget.no_modal_or_popup_active());
+    assert!(
+        app_event_rx.try_recv().is_err(),
+        "completion from the previous thread must not append history"
+    );
+}
+
+#[tokio::test]
+async fn mcp_oauth_completion_success_after_thread_switch_clears_pending_without_refresh() {
+    let mut app = make_test_app().await;
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
+    let _operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should begin");
+    app.chat_widget.dismiss_mcp_views();
+    app.active_thread_id = Some(codex_protocol::ThreadId::new());
+
+    let refresh_operation =
+        app.handle_mcp_oauth_login_completed_transition(oauth_completion("sentry", true, None));
+
+    assert_eq!(refresh_operation, None);
+    assert!(app.pending_mcp_oauth.is_none());
+    assert!(app.chat_widget.no_modal_or_popup_active());
+}
+
+#[tokio::test]
 async fn mcp_oauth_completion_failure_visible_is_sanitized_and_retryable() {
     let mut app = make_test_app().await;
     let selected_server = server("sentry");
@@ -510,6 +568,7 @@ async fn mcp_oauth_completion_failure_visible_is_sanitized_and_retryable() {
 #[tokio::test]
 async fn mcp_oauth_completion_failure_after_close_adds_one_safe_history_message() {
     let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    app.active_thread_id = Some(codex_protocol::ThreadId::new());
     set_waiting_oauth(&mut app, "mcp-oauth-operation", server("sentry"));
     let secret_error = format!("provider rejected state=DO_NOT_PERSIST at {SECRET_URL}");
 
@@ -530,6 +589,37 @@ async fn mcp_oauth_completion_failure_after_close_adds_one_safe_history_message(
     assert!(rendered.contains("Authentication failed for MCP server 'sentry'"));
     assert!(!rendered.contains(SECRET_URL));
     assert!(!rendered.contains("DO_NOT_PERSIST"));
+    assert!(app_event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn mcp_oauth_completion_failure_history_redacts_structured_secret_payloads() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    set_waiting_oauth(&mut app, "mcp-oauth-operation", server("sentry"));
+    let structured_error = r#"headers={"Authorization":"Bearer DO_NOT_PERSIST"} {"state":"STATE_SECRET","access_token":"TOKEN_SECRET"}"#;
+
+    let refresh_operation = app.handle_mcp_oauth_login_completed_transition(oauth_completion(
+        "sentry",
+        false,
+        Some(structured_error),
+    ));
+
+    assert_eq!(refresh_operation, None);
+    assert!(app.pending_mcp_oauth.is_none());
+    assert!(app.chat_widget.no_modal_or_popup_active());
+    let cell = match app_event_rx.try_recv() {
+        Ok(AppEvent::InsertHistoryCell(cell)) => cell,
+        other => panic!("expected one OAuth failure history cell, got {other:?}"),
+    };
+    let rendered = lines_to_string(&cell.display_lines(/*width*/ 200));
+    for secret in ["DO_NOT_PERSIST", "STATE_SECRET", "TOKEN_SECRET"] {
+        assert!(
+            !rendered.contains(secret),
+            "history leaked {secret}: {rendered}"
+        );
+    }
+    assert!(!rendered.contains("{\"Authorization\""));
+    assert!(rendered.contains("[REDACTED]"));
     assert!(app_event_rx.try_recv().is_err());
 }
 
@@ -666,6 +756,7 @@ async fn mcp_oauth_stale_refresh_operation_and_phase_are_ignored() {
 
     app.handle_mcp_oauth_refresh_finished(
         "stale-operation".to_string(),
+        None,
         McpOauthRefreshResult::new(Ok(vec![selected_server.clone()])),
     );
 
@@ -680,6 +771,7 @@ async fn mcp_oauth_stale_refresh_operation_and_phase_are_ignored() {
         PendingMcpOauthPhase::WaitingForCompletion;
     app.handle_mcp_oauth_refresh_finished(
         "mcp-oauth-operation".to_string(),
+        None,
         McpOauthRefreshResult::new(Ok(vec![selected_server])),
     );
     assert_eq!(
@@ -708,6 +800,7 @@ async fn mcp_oauth_refresh_success_restores_fresh_exact_detail_only_while_panel_
 
     app.handle_mcp_oauth_refresh_finished(
         "mcp-oauth-operation".to_string(),
+        None,
         McpOauthRefreshResult::new(Ok(vec![differently_cased, fresh_server])),
     );
 
@@ -721,11 +814,14 @@ async fn mcp_oauth_refresh_success_restores_fresh_exact_detail_only_while_panel_
 #[tokio::test]
 async fn mcp_oauth_refresh_success_after_close_adds_one_history_message_without_modal() {
     let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
     let selected_server = server("sentry");
     set_refreshing_oauth(&mut app, "mcp-oauth-operation", selected_server.clone());
 
     app.handle_mcp_oauth_refresh_finished(
         "mcp-oauth-operation".to_string(),
+        Some(origin_thread_id),
         McpOauthRefreshResult::new(Ok(vec![selected_server])),
     );
 
@@ -743,6 +839,36 @@ async fn mcp_oauth_refresh_success_after_close_adds_one_history_message_without_
 }
 
 #[tokio::test]
+async fn mcp_oauth_refresh_result_after_thread_switch_does_not_mutate_new_thread() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
+    let selected_server = server("sentry");
+    let operation_id = app
+        .begin_mcp_oauth(selected_server.clone())
+        .expect("OAuth operation should begin");
+    assert_eq!(
+        app.handle_mcp_oauth_login_completed_transition(oauth_completion("sentry", true, None)),
+        Some(operation_id.clone())
+    );
+    app.chat_widget.dismiss_mcp_views();
+    app.active_thread_id = Some(codex_protocol::ThreadId::new());
+
+    app.handle_mcp_oauth_refresh_finished(
+        operation_id,
+        Some(origin_thread_id),
+        McpOauthRefreshResult::new(Ok(vec![selected_server])),
+    );
+
+    assert!(app.pending_mcp_oauth.is_none());
+    assert!(app.chat_widget.no_modal_or_popup_active());
+    assert!(
+        app_event_rx.try_recv().is_err(),
+        "refresh from the previous thread must not append history"
+    );
+}
+
+#[tokio::test]
 async fn mcp_oauth_refresh_failure_visible_mentions_restart_and_hides_secret() {
     let mut app = make_test_app().await;
     let selected_server = server("sentry");
@@ -755,6 +881,7 @@ async fn mcp_oauth_refresh_failure_visible_mentions_restart_and_hides_secret() {
 
     app.handle_mcp_oauth_refresh_finished(
         "mcp-oauth-operation".to_string(),
+        None,
         McpOauthRefreshResult::new(Err(format!(
             "reload failed for state=DO_NOT_PERSIST at {SECRET_URL}"
         ))),
@@ -777,6 +904,7 @@ async fn mcp_oauth_refresh_missing_server_after_close_reports_safe_restart_guida
 
     app.handle_mcp_oauth_refresh_finished(
         "mcp-oauth-operation".to_string(),
+        None,
         McpOauthRefreshResult::new(Ok(vec![server("other-server")])),
     );
 
@@ -802,6 +930,7 @@ fn mcp_oauth_app_event_debug_redacts_login_and_refresh_payloads() {
     };
     let refresh = AppEvent::McpOauthRefreshFinished {
         operation_id: "mcp-oauth-operation".to_string(),
+        thread_id: None,
         result: McpOauthRefreshResult::new(Err(format!(
             "failed at {SECRET_URL} with state=DO_NOT_PERSIST"
         ))),

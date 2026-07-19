@@ -588,3 +588,45 @@ async fn mcp_oauth_error_sanitizer_redacts_header_token_and_environment_values()
     assert!(!rendered.contains("ENV_SECRET"));
     assert!(rendered.contains("[REDACTED]"));
 }
+
+#[tokio::test]
+async fn mcp_oauth_error_sanitizer_redacts_structured_quoted_and_plural_values_in_ui() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    let server = status("sentry", McpAuthStatus::NotLoggedIn, false, &[]);
+    chat.open_mcp_server_detail(server.clone());
+    chat.open_mcp_oauth_starting(server.clone());
+
+    for (message, secrets) in [
+        (
+            r#"headers={"Authorization":"Bearer DO_NOT_PERSIST"}"#,
+            &["DO_NOT_PERSIST"][..],
+        ),
+        (
+            r#"{"state":"STATE_SECRET","access_token":"TOKEN_SECRET"}"#,
+            &["STATE_SECRET", "TOKEN_SECRET"][..],
+        ),
+        (
+            r#"{"credential":"CREDENTIAL_SECRET","environment":"ENVIRONMENT_SECRET","env":"ENV_SECRET","token":"QUOTED_TOKEN_SECRET"}"#,
+            &[
+                "CREDENTIAL_SECRET",
+                "ENVIRONMENT_SECRET",
+                "ENV_SECRET",
+                "QUOTED_TOKEN_SECRET",
+            ][..],
+        ),
+        (
+            "Authorization Bearer AUTH_SECRET header X-Api-Key HEADER_SECRET",
+            &["AUTH_SECRET", "HEADER_SECRET"][..],
+        ),
+    ] {
+        assert!(chat.show_mcp_oauth_error(server.clone(), message.to_string()));
+        let rendered = render_bottom_popup(&chat, /*width*/ 200);
+        for secret in secrets {
+            assert!(
+                !rendered.contains(secret),
+                "rendered secret {secret}: {rendered}"
+            );
+        }
+        assert!(rendered.contains("[REDACTED]"));
+    }
+}

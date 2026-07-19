@@ -852,9 +852,10 @@ impl App {
             }
             AppEvent::McpOauthRefreshFinished {
                 operation_id,
+                thread_id,
                 result,
             } => {
-                self.handle_mcp_oauth_refresh_finished(operation_id, result);
+                self.handle_mcp_oauth_refresh_finished(operation_id, thread_id, result);
             }
             AppEvent::DismissMcpViews => {
                 self.chat_widget.dismiss_mcp_views();

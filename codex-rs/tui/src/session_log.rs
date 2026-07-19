@@ -125,14 +125,15 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
         return;
     }
 
-    if let Some((variant, ok)) = oauth_app_event_metadata(event) {
-        let value = json!({
+    if let Some(metadata) = safe_app_event_metadata(event) {
+        let mut value = json!({
             "ts": now_ts(),
             "dir": "to_tui",
             "kind": "app_event",
-            "variant": variant,
-            "ok": ok,
         });
+        if let (Some(record), Some(metadata)) = (value.as_object_mut(), metadata.as_object()) {
+            record.extend(metadata.clone());
+        }
         LOGGER.write_json_line(value);
         return;
     }
@@ -233,6 +234,30 @@ fn oauth_app_event_metadata(event: &AppEvent) -> Option<(&'static str, Option<bo
             Some(("McpOauthRefreshFinished", Some(result.is_ok())))
         }
         AppEvent::DismissMcpViews => Some(("DismissMcpViews", None)),
+        _ => None,
+    }
+}
+
+fn safe_app_event_metadata(event: &AppEvent) -> Option<serde_json::Value> {
+    if let Some((variant, ok)) = oauth_app_event_metadata(event) {
+        return Some(json!({
+            "variant": variant,
+            "ok": ok,
+        }));
+    }
+
+    match event {
+        AppEvent::McpInventoryLoaded { result, detail, .. } => Some(json!({
+            "variant": "McpInventoryLoaded",
+            "ok": result.is_ok(),
+            "count": result.as_ref().ok().map(Vec::len),
+            "detail": detail,
+        })),
+        AppEvent::McpPickerInventoryLoaded { result, .. } => Some(json!({
+            "variant": "McpPickerInventoryLoaded",
+            "ok": result.is_ok(),
+            "count": result.as_ref().ok().map(Vec::len),
+        })),
         _ => None,
     }
 }

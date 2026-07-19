@@ -828,6 +828,7 @@ pub(crate) enum AppEvent {
     /// Result of refreshing MCP connections and loading fresh OAuth-aware inventory.
     McpOauthRefreshFinished {
         operation_id: String,
+        thread_id: Option<ThreadId>,
         result: McpOauthRefreshResult,
     },
 
