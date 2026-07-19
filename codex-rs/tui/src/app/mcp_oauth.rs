@@ -82,6 +82,7 @@ impl App {
     where
         R: Into<McpOauthLoginResult>,
     {
+        let current_thread_id = self.current_displayed_thread_id();
         let Some(pending) = self.pending_mcp_oauth.as_mut() else {
             tracing::debug!(%operation_id, "ignored MCP OAuth login result without a pending operation");
             return;
@@ -90,6 +91,11 @@ impl App {
             || pending.phase != PendingMcpOauthPhase::RequestingUrl
         {
             tracing::debug!(%operation_id, "ignored stale MCP OAuth login result");
+            return;
+        }
+        if pending.origin_thread_id != current_thread_id {
+            tracing::debug!(%operation_id, "discarded MCP OAuth login result after thread switch");
+            self.pending_mcp_oauth = None;
             return;
         }
 
@@ -289,12 +295,18 @@ impl App {
         E: Display,
         F: FnOnce(&str) -> Result<(), E>,
     {
+        let current_thread_id = self.current_displayed_thread_id();
         let Some(pending) = self.pending_mcp_oauth.as_ref() else {
             return;
         };
         if pending.operation_id != operation_id
             || pending.phase != PendingMcpOauthPhase::WaitingForCompletion
         {
+            return;
+        }
+        if pending.origin_thread_id != current_thread_id {
+            tracing::debug!(%operation_id, "discarded pending MCP OAuth URL after thread switch");
+            self.pending_mcp_oauth = None;
             return;
         }
         let Some(authorization_url) = pending.authorization_url.as_ref() else {
