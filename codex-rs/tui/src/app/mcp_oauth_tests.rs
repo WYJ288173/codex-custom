@@ -209,6 +209,55 @@ async fn matching_oauth_login_failure_clears_pending_operation() {
 }
 
 #[tokio::test]
+async fn matching_oauth_login_success_after_thread_switch_is_discarded_without_ui_or_browser_event()
+{
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
+    let operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should start");
+    app.chat_widget.dismiss_mcp_views();
+    app.active_thread_id = Some(codex_protocol::ThreadId::new());
+
+    app.handle_mcp_oauth_login_started(
+        operation_id,
+        Ok(McpOauthAuthorizationUrl::new(SECRET_URL.to_string())),
+    );
+
+    assert!(app.pending_mcp_oauth.is_none());
+    assert!(app.chat_widget.no_modal_or_popup_active());
+    assert!(
+        app_event_rx.try_recv().is_err(),
+        "stale login success must not open a browser or append history"
+    );
+}
+
+#[tokio::test]
+async fn matching_oauth_login_error_after_thread_switch_is_discarded_without_ui_or_history() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
+    let operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should start");
+    app.chat_widget.dismiss_mcp_views();
+    app.active_thread_id = Some(codex_protocol::ThreadId::new());
+
+    app.handle_mcp_oauth_login_started(
+        operation_id,
+        Err("authorization service unavailable".to_string()),
+    );
+
+    assert!(app.pending_mcp_oauth.is_none());
+    assert!(app.chat_widget.no_modal_or_popup_active());
+    assert!(
+        app_event_rx.try_recv().is_err(),
+        "stale login error must not append history"
+    );
+}
+
+#[tokio::test]
 async fn oauth_start_after_mcp_views_close_keeps_panel_closed() {
     let mut app = make_test_app().await;
     let selected_server = server("sentry");
@@ -328,6 +377,44 @@ async fn mcp_oauth_url_initial_open_uses_exact_in_memory_url_once_without_histor
 
     assert_eq!(opened, vec![SECRET_URL.to_string()]);
     assert!(app_event_rx.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn queued_mcp_oauth_url_open_after_thread_switch_is_discarded_without_calling_opener() {
+    let (mut app, mut app_event_rx) = make_test_app_with_event_rx().await;
+    let origin_thread_id = codex_protocol::ThreadId::new();
+    app.active_thread_id = Some(origin_thread_id);
+    let operation_id = app
+        .begin_mcp_oauth(server("sentry"))
+        .expect("OAuth operation should start");
+    app.handle_mcp_oauth_login_started(
+        operation_id.clone(),
+        Ok(McpOauthAuthorizationUrl::new(SECRET_URL.to_string())),
+    );
+    assert_matches::assert_matches!(
+        app_event_rx.try_recv(),
+        Ok(AppEvent::OpenPendingMcpOauthUrl { operation_id: actual })
+            if actual == operation_id
+    );
+    app.chat_widget.dismiss_mcp_views();
+    app.active_thread_id = Some(codex_protocol::ThreadId::new());
+    let mut opener_called = false;
+
+    app.open_pending_mcp_oauth_url_with(&operation_id, |_url| {
+        opener_called = true;
+        Err::<(), _>("simulated browser failure")
+    });
+
+    assert!(
+        !opener_called,
+        "stale queued open must not invoke the opener"
+    );
+    assert!(app.pending_mcp_oauth.is_none());
+    assert!(app.chat_widget.no_modal_or_popup_active());
+    assert!(
+        app_event_rx.try_recv().is_err(),
+        "stale queued open must not append browser failure history"
+    );
 }
 
 #[tokio::test]
