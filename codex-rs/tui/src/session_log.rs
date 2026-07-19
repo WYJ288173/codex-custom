@@ -258,6 +258,16 @@ fn safe_app_event_metadata(event: &AppEvent) -> Option<serde_json::Value> {
             "ok": result.is_ok(),
             "count": result.as_ref().ok().map(Vec::len),
         })),
+        AppEvent::OpenMcpServerDetail { server } => Some(json!({
+            "variant": "OpenMcpServerDetail",
+            "server": server.name,
+            "tool_count": server.tools.len(),
+        })),
+        AppEvent::OpenMcpServerTools { server } => Some(json!({
+            "variant": "OpenMcpServerTools",
+            "server": server.name,
+            "tool_count": server.tools.len(),
+        })),
         _ => None,
     }
 }
