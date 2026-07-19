@@ -144,6 +144,30 @@ async fn mcp_picker_inventory_error_offers_retry_snapshot() {
 }
 
 #[tokio::test]
+async fn mcp_picker_initial_inventory_error_redacts_sensitive_values() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+    chat.open_mcp_picker_loading();
+    let secret_url = "https://oauth.example/authorize?state=DO_NOT_PERSIST";
+
+    chat.on_mcp_picker_inventory_loaded(
+        Err(format!(
+            "failed at {secret_url}; Authorization: Bearer TOKEN_SECRET env=ENV_SECRET"
+        )),
+        /*focus_server*/ None,
+    );
+
+    let rendered = render_bottom_popup(&chat, /*width*/ 120);
+    for secret in [secret_url, "DO_NOT_PERSIST", "TOKEN_SECRET", "ENV_SECRET"] {
+        assert!(
+            !rendered.contains(secret),
+            "rendered secret {secret}: {rendered}"
+        );
+    }
+    assert!(rendered.contains("[REDACTED]"));
+    assert!(rendered.contains("Retry"));
+}
+
+#[tokio::test]
 async fn mcp_picker_narrow_width_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
     chat.open_mcp_picker_loading();

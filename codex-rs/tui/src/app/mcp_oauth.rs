@@ -43,7 +43,11 @@ impl App {
             tracing::debug!(server = %server.name, "ignored MCP OAuth start while another operation is pending");
             return;
         };
-        let request = mcp_oauth_login_request(&operation_id, &server);
+        let origin_thread_id = self
+            .pending_mcp_oauth
+            .as_ref()
+            .and_then(|pending| pending.origin_thread_id);
+        let request = mcp_oauth_login_request(&operation_id, &server, origin_thread_id);
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
         tokio::spawn(async move {
@@ -156,6 +160,13 @@ impl App {
         if pending.origin_thread_id != current_thread_id {
             tracing::debug!(server = %notification.name, "discarded MCP OAuth completion after thread switch");
             self.pending_mcp_oauth = None;
+            return None;
+        }
+        let origin_thread_id = pending
+            .origin_thread_id
+            .map(|thread_id| thread_id.to_string());
+        if origin_thread_id.as_deref() != notification.thread_id.as_deref() {
+            tracing::debug!(server = %notification.name, "ignored MCP OAuth completion for another origin thread");
             return None;
         }
 
@@ -328,12 +339,16 @@ impl App {
     }
 }
 
-fn mcp_oauth_login_request(operation_id: &str, server: &McpServerStatus) -> ClientRequest {
+fn mcp_oauth_login_request(
+    operation_id: &str,
+    server: &McpServerStatus,
+    origin_thread_id: Option<ThreadId>,
+) -> ClientRequest {
     ClientRequest::McpServerOauthLogin {
         request_id: RequestId::String(operation_id.to_string()),
         params: McpServerOauthLoginParams {
             name: server.name.clone(),
-            thread_id: None,
+            thread_id: origin_thread_id.map(|thread_id| thread_id.to_string()),
             scopes: None,
             timeout_secs: None,
         },
