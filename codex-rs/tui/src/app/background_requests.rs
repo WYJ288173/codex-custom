@@ -680,7 +680,7 @@ impl App {
             {
                 guard
                     .pending_interactive_replay
-                    .note_evicted_server_request(request);
+                    .note_evicted_server_request(request.as_ref());
             }
             guard.active
         };
@@ -1096,6 +1096,7 @@ async fn request_plugin_list_with_marketplace_kinds(
             params: PluginListParams {
                 cwds: Some(vec![cwd]),
                 marketplace_kinds,
+                force_refetch: false,
             },
         })
         .await
@@ -1201,6 +1202,7 @@ pub(super) async fn fetch_plugin_install(
             params: PluginInstallParams {
                 marketplace_path,
                 remote_marketplace_name,
+                install_attempt_id: None,
                 plugin_name,
             },
         })
@@ -1330,6 +1332,7 @@ pub(super) fn mcp_inventory_maps_from_statuses(statuses: Vec<McpServerStatus>) -
         auth_statuses.insert(
             server_name.clone(),
             match status.auth_status {
+                codex_app_server_protocol::McpAuthStatus::Unknown => McpAuthStatus::Unknown,
                 codex_app_server_protocol::McpAuthStatus::Unsupported => McpAuthStatus::Unsupported,
                 codex_app_server_protocol::McpAuthStatus::NotLoggedIn => McpAuthStatus::NotLoggedIn,
                 codex_app_server_protocol::McpAuthStatus::BearerToken => McpAuthStatus::BearerToken,
@@ -1508,6 +1511,7 @@ mod tests {
         let statuses = vec![
             McpServerStatus {
                 name: "docs".to_string(),
+                plugin_id: None,
                 server_info: None,
                 tools: HashMap::from([(
                     "list".to_string(),
@@ -1528,6 +1532,7 @@ mod tests {
             },
             McpServerStatus {
                 name: "disabled".to_string(),
+                plugin_id: None,
                 server_info: None,
                 tools: HashMap::new(),
                 resources: Vec::new(),

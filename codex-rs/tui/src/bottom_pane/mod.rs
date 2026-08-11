@@ -27,20 +27,23 @@ use crate::bottom_pane::unified_exec_footer::UnifiedExecFooter;
 use crate::key_hint;
 use crate::key_hint::KeyBinding;
 use crate::key_hint::KeyBindingListExt;
+use crate::keymap::KeymapContext;
+use crate::keymap::KeymapContextSet;
 use crate::keymap::RuntimeKeymap;
-use crate::keymap::primary_binding;
 use crate::render::renderable::FlexRenderable;
 use crate::render::renderable::Renderable;
 use crate::render::renderable::RenderableItem;
+use crate::terminal_palette::effective_stdout_color_level;
 use crate::tui::FrameRequester;
 pub(crate) use bottom_pane_view::BottomPaneView;
 pub(crate) use bottom_pane_view::ViewCompletion;
+use codex_app_server_protocol::SkillMetadata;
 use codex_app_server_protocol::ToolRequestUserInputParams;
-use codex_core_skills::model::SkillMetadata;
 use codex_features::Features;
 use codex_file_search::FileMatch;
 use codex_plugin::PluginCapabilitySummary;
 use codex_protocol::ThreadId;
+use codex_protocol::openai_models::ReasoningEffort;
 use codex_protocol::user_input::TextElement;
 use crossterm::event::KeyCode;
 use crossterm::event::KeyEvent;
@@ -83,6 +86,7 @@ pub(crate) use request_user_input::RequestUserInputOverlay;
 pub(crate) use status_line_style::status_line_from_segments;
 pub(crate) type StatusLineValue = Vec<ratatui::text::Line<'static>>;
 mod bottom_pane_view;
+mod effort_ignition;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LocalImageAttachment {
@@ -103,6 +107,7 @@ mod chat_composer;
 mod chat_composer_history;
 mod command_popup;
 pub(crate) mod custom_prompt_view;
+mod effort_status_line;
 mod experimental_features_view;
 mod file_search_popup;
 mod footer;
@@ -120,6 +125,7 @@ pub(crate) use footer::goal_status_indicator_line;
 pub(crate) use list_selection_view::ColumnWidthMode;
 pub(crate) use list_selection_view::ListSelectionView;
 pub(crate) use list_selection_view::OnSelectionChangedCallback;
+pub(crate) use list_selection_view::SelectionDescriptionLayout;
 pub(crate) use list_selection_view::SelectionRowDisplay;
 pub(crate) use list_selection_view::SelectionToggle;
 pub(crate) use list_selection_view::SelectionViewParams;
@@ -152,6 +158,7 @@ mod pending_thread_approvals;
 pub(crate) mod popup_consts;
 mod scroll_state;
 mod selection_popup_common;
+mod selection_row_layout;
 mod selection_tabs;
 mod textarea;
 mod unified_exec_footer;
@@ -322,6 +329,29 @@ impl BottomPane {
         self.request_redraw();
     }
 
+    /// Mirrors the effective reasoning effort into the composer so its next
+    /// visible frame can play a one-shot Max/Ultra effect.
+    pub(crate) fn set_active_reasoning_effort(&mut self, effort: Option<&ReasoningEffort>) {
+        let animations_enabled = effort_ignition::effort_animation_enabled(
+            self.animations_enabled,
+            effective_stdout_color_level(),
+        );
+        if self
+            .composer
+            .set_active_reasoning_effort(effort, animations_enabled)
+        {
+            self.request_redraw();
+        }
+    }
+
+    /// Establishes a restored thread's effort without replaying its one-shot animation.
+    pub(crate) fn set_active_reasoning_effort_baseline(
+        &mut self,
+        effort: Option<&ReasoningEffort>,
+    ) {
+        self.composer.set_active_reasoning_effort_baseline(effort);
+    }
+
     pub fn set_connectors_snapshot(&mut self, snapshot: Option<ConnectorsSnapshot>) {
         self.composer.set_connector_mentions(snapshot);
         self.request_redraw();
@@ -373,7 +403,7 @@ impl BottomPane {
     pub fn set_keymap_bindings(&mut self, keymap: &RuntimeKeymap) {
         self.keymap = keymap.clone();
         self.composer.set_keymap_bindings(keymap);
-        let interrupt_binding = primary_binding(&keymap.chat.interrupt_turn);
+        let interrupt_binding = keymap.primary_hint(KeymapContext::Chat, "interrupt_turn");
         self.pending_input_preview
             .set_interrupt_binding(interrupt_binding);
         if let Some(status) = self.status.as_mut() {
@@ -460,7 +490,10 @@ impl BottomPane {
 
     /// Update the key hint shown next to queued messages so it matches the
     /// binding that `ChatWidget` actually listens for.
-    pub(crate) fn set_queued_message_edit_binding(&mut self, binding: Option<KeyBinding>) {
+    pub(crate) fn set_queued_message_edit_binding(
+        &mut self,
+        binding: Option<crate::key_hint::ShortcutHint>,
+    ) {
         self.pending_input_preview.set_edit_binding(binding);
         self.request_redraw();
     }
@@ -665,6 +698,15 @@ impl BottomPane {
                 self.request_redraw_in(ChatComposer::recommended_paste_flush_delay());
             }
             input_result
+        }
+    }
+
+    /// Return the contexts whose ordinary handlers can consume the next key.
+    pub(crate) fn keymap_contexts(&self) -> KeymapContextSet {
+        if let Some(view) = self.view_stack.last() {
+            view.keymap_contexts()
+        } else {
+            self.composer.keymap_contexts()
         }
     }
 
@@ -1022,7 +1064,10 @@ impl BottomPane {
                 }
                 if let Some(status) = self.status.as_mut() {
                     status.set_interrupt_hint_visible(/*visible*/ true);
-                    status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
+                    status.set_interrupt_binding(
+                        self.keymap
+                            .primary_hint(KeymapContext::Chat, "interrupt_turn"),
+                    );
                 }
                 self.sync_status_inline_message();
                 self.request_redraw();
@@ -1052,7 +1097,10 @@ impl BottomPane {
                 self.animations_enabled,
             ));
             if let Some(status) = self.status.as_mut() {
-                status.set_interrupt_binding(primary_binding(&self.keymap.chat.interrupt_turn));
+                status.set_interrupt_binding(
+                    self.keymap
+                        .primary_hint(KeymapContext::Chat, "interrupt_turn"),
+                );
             }
             self.sync_status_inline_message();
             self.request_redraw();
@@ -1076,6 +1124,11 @@ impl BottomPane {
         self.context_window_used_tokens = used_tokens;
         self.composer
             .set_context_window(percent, self.context_window_used_tokens);
+        self.request_redraw();
+    }
+
+    pub(crate) fn set_context_window_pending(&mut self, pending: bool) {
+        self.composer.set_context_window_pending(pending);
         self.request_redraw();
     }
 
@@ -1208,6 +1261,13 @@ impl BottomPane {
         self.view_stack
             .last()
             .filter(|view| view.view_id() == Some(view_id))
+            .and_then(|view| view.selected_index())
+    }
+
+    pub(crate) fn selected_index_for_present_view(&self, view_id: &'static str) -> Option<usize> {
+        self.view_stack
+            .iter()
+            .rfind(|view| view.view_id() == Some(view_id))
             .and_then(|view| view.selected_index())
     }
 
@@ -1527,7 +1587,7 @@ impl BottomPane {
             self.has_input_focus,
             self.enhanced_keys_supported,
             self.disable_paste_burst,
-            self.keymap.list.clone(),
+            self.keymap.clone(),
         );
         self.pause_status_timer_for_modal();
         self.set_composer_input_enabled(
@@ -1702,7 +1762,7 @@ impl BottomPane {
         self.as_renderable_with_composer_right_reserve(/*composer_right_reserve*/ 0)
     }
 
-    fn as_renderable_with_composer_right_reserve(
+    pub(crate) fn as_renderable_with_composer_right_reserve(
         &'_ self,
         composer_right_reserve: u16,
     ) -> RenderableItem<'_> {
@@ -1758,43 +1818,6 @@ impl BottomPane {
             flex2.push(/*flex*/ 0, composer);
             RenderableItem::Owned(Box::new(flex2))
         }
-    }
-
-    pub(crate) fn render_with_composer_right_reserve(
-        &self,
-        area: Rect,
-        buf: &mut Buffer,
-        composer_right_reserve: u16,
-    ) {
-        self.as_renderable_with_composer_right_reserve(composer_right_reserve)
-            .render(area, buf);
-    }
-
-    pub(crate) fn desired_height_with_composer_right_reserve(
-        &self,
-        width: u16,
-        composer_right_reserve: u16,
-    ) -> u16 {
-        self.as_renderable_with_composer_right_reserve(composer_right_reserve)
-            .desired_height(width)
-    }
-
-    pub(crate) fn cursor_pos_with_composer_right_reserve(
-        &self,
-        area: Rect,
-        composer_right_reserve: u16,
-    ) -> Option<(u16, u16)> {
-        self.as_renderable_with_composer_right_reserve(composer_right_reserve)
-            .cursor_pos(area)
-    }
-
-    pub(crate) fn cursor_style_with_composer_right_reserve(
-        &self,
-        area: Rect,
-        composer_right_reserve: u16,
-    ) -> crossterm::cursor::SetCursorStyle {
-        self.as_renderable_with_composer_right_reserve(composer_right_reserve)
-            .cursor_style(area)
     }
 
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
@@ -2699,10 +2722,9 @@ mod tests {
                 short_description: None,
                 interface: None,
                 dependencies: None,
-                policy: None,
-                path_to_skills_md: test_path_buf("/tmp/test-skill/SKILL.md").abs(),
+                path: test_path_buf("/tmp/test-skill/SKILL.md").abs(),
                 scope: crate::test_support::skill_scope_user(),
-                plugin_id: None,
+                enabled: true,
             }]),
         });
 

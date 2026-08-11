@@ -112,10 +112,8 @@ impl FileSystemSandboxRunner {
     ) -> Result<SandboxExecRequest, JSONRPCErrorError> {
         let helper = &self.runtime_paths.codex_self_exe;
         let sandbox_manager = SandboxManager::new();
-        let (file_system_policy, network_policy) = permission_profile.to_runtime_permissions();
         let sandbox = sandbox_manager.select_initial(
-            &file_system_policy,
-            network_policy,
+            permission_profile,
             SandboxablePreference::Auto,
             sandbox_context.windows_sandbox_level,
             /*has_managed_network_requirements*/ false,
@@ -206,12 +204,12 @@ fn add_helper_runtime_permissions(
     cwd: &std::path::Path,
 ) {
     if !file_system_policy.has_full_disk_read_access() {
-        let minimal_read_entry = FileSystemSandboxEntry {
-            path: FileSystemPath::Special {
+        let minimal_read_entry = FileSystemSandboxEntry::new(
+            FileSystemPath::Special {
                 value: FileSystemSpecialPath::Minimal,
             },
-            access: FileSystemAccessMode::Read,
-        };
+            FileSystemAccessMode::Read,
+        );
         if !file_system_policy.entries.contains(&minimal_read_entry) {
             file_system_policy.entries.push(minimal_read_entry);
         }
@@ -222,12 +220,12 @@ fn add_helper_runtime_permissions(
             continue;
         }
 
-        file_system_policy.entries.push(FileSystemSandboxEntry {
-            path: FileSystemPath::Path {
+        file_system_policy.entries.push(FileSystemSandboxEntry::new(
+            FileSystemPath::Path {
                 path: helper_read_root.clone(),
             },
-            access: FileSystemAccessMode::Read,
-        });
+            FileSystemAccessMode::Read,
+        ));
     }
 }
 
@@ -329,7 +327,7 @@ fn spawn_command(
     SandboxExecRequest {
         command: argv,
         cwd,
-        env,
+        mut env,
         arg0,
         ..
     }: SandboxExecRequest,
@@ -348,6 +346,7 @@ fn spawn_command(
     // TODO(anp): Keep PathUri through the filesystem helper launch boundary.
     let cwd = cwd.to_abs_path().map_err(io_error)?;
     command.current_dir(cwd.as_path());
+    env.retain(|name, _| !codex_protocol::shell_environment::is_non_inheritable_env_var(name));
     command.env_clear();
     command.envs(env);
     command.stdin(std::process::Stdio::piped());
@@ -618,6 +617,7 @@ mod tests {
                 value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         }]);
         let sandbox_context = codex_file_system::FileSystemSandboxContext::from_permission_profile(
             PermissionProfile::from_runtime_permissions(&policy, NetworkSandboxPolicy::Restricted),
@@ -710,6 +710,7 @@ mod tests {
         FileSystemSandboxEntry {
             path: FileSystemPath::Path { path },
             access,
+            missing_path_behavior: None,
         }
     }
 
@@ -720,6 +721,7 @@ mod tests {
         FileSystemSandboxEntry {
             path: FileSystemPath::Special { value },
             access,
+            missing_path_behavior: None,
         }
     }
 }

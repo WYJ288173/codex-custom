@@ -1,4 +1,6 @@
 use super::*;
+use crate::extensions::send_thread_warning;
+use codex_extension_api::ThreadIdleCause;
 use codex_protocol::config_types::MultiAgentMode;
 
 pub(super) const THREAD_UNLOADING_DELAY: Duration = Duration::from_secs(30 * 60);
@@ -488,6 +490,9 @@ pub(super) async fn handle_thread_listener_command(
                 ))
                 .await;
         }
+        ThreadListenerCommand::EmitWarning { message } => {
+            send_thread_warning(outgoing, thread_state_manager, conversation_id, message).await;
+        }
         ThreadListenerCommand::EmitThreadGoalCleared => {
             outgoing
                 .send_server_notification(ServerNotification::ThreadGoalCleared(
@@ -577,7 +582,6 @@ pub(super) async fn handle_pending_thread_resume_request(
         thread_status.clone(),
         has_live_in_progress_turn,
     );
-    let token_usage_thread = pending.include_turns.then(|| thread.clone());
     let mut initial_turns_page = if let Some(mut page) = pending.paginated_initial_turns_page.take()
     {
         if let (Some(active_turn), Some(params)) =
@@ -617,6 +621,12 @@ pub(super) async fn handle_pending_thread_resume_request(
     } else {
         None
     };
+    let token_usage_turn_id = pending
+        .include_turns
+        .then(|| restored_token_usage_turn_id(&pending.history_items, thread.turns.as_slice()));
+    if pending.initial_turns_page.is_none() {
+        initial_turns_page = None;
+    }
     if pending.redact_resume_payloads {
         redact_thread_resume_payloads(&mut thread.turns);
         if let Some(initial_turns_page) = initial_turns_page.as_mut() {
@@ -714,18 +724,13 @@ pub(super) async fn handle_pending_thread_resume_request(
         .await;
     // Match cold resume: metadata-only resume should attach the listener without
     // paying the cost of turn reconstruction for historical usage replay.
-    if let Some(token_usage_thread) = token_usage_thread {
-        let token_usage_turn_id = latest_token_usage_turn_id_from_rollout_items(
-            &pending.history_items,
-            token_usage_thread.turns.as_slice(),
-        );
+    if let Some(token_usage_turn_id) = token_usage_turn_id {
         // Rejoining a loaded thread has the same UI contract as a cold resume, but
         // uses the live conversation state instead of reconstructing a new session.
         send_thread_token_usage_update_to_connection(
             outgoing,
             connection_id,
             conversation_id,
-            &token_usage_thread,
             conversation.as_ref(),
             token_usage_turn_id,
         )
@@ -746,9 +751,9 @@ pub(super) async fn handle_pending_thread_resume_request(
         .await;
     // App-server owns resume response and snapshot ordering, so wait until
     // replay completes before letting extensions react to the idle thread.
-    if pending.emit_thread_goal_update {
-        conversation.emit_thread_idle_lifecycle_if_idle().await;
-    }
+    conversation
+        .emit_thread_idle_lifecycle_if_idle(ThreadIdleCause::Completed)
+        .await;
 }
 
 pub(super) async fn send_thread_goal_snapshot_notification(
