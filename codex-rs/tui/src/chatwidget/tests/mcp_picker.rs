@@ -29,6 +29,7 @@ fn status(
 ) -> McpServerStatus {
     McpServerStatus {
         name: name.to_string(),
+        plugin_id: None,
         server_info: connected.then(|| McpServerInfo {
             name: name.to_string(),
             title: None,
