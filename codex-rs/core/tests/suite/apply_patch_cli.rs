@@ -37,6 +37,7 @@ use codex_sandboxing::landlock::CODEX_LINUX_SANDBOX_ARG0;
 use codex_utils_absolute_path::AbsolutePathBuf;
 use codex_utils_path_uri::PathUri;
 use core_test_support::PathBufExt;
+use core_test_support::TestTargetOs;
 use core_test_support::assert_regex_match;
 use core_test_support::responses::ev_assistant_message;
 use core_test_support::responses::ev_completed;
@@ -56,6 +57,7 @@ use core_test_support::test_codex::TestCodexHarness;
 use core_test_support::test_codex::local;
 use core_test_support::test_codex::test_codex;
 use core_test_support::test_codex::turn_permission_fields;
+use core_test_support::test_target_os;
 use core_test_support::wait_for_event;
 use core_test_support::wait_for_event_with_timeout;
 use serde_json::json;
@@ -140,12 +142,14 @@ fn workspace_write_with_read_only_root(read_only_root: AbsolutePathBuf) -> Permi
                 path: read_only_root,
             },
             access: FileSystemAccessMode::Read,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {
                 value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
     ]);
     PermissionProfile::from_runtime_permissions(
@@ -162,12 +166,14 @@ fn workspace_write_with_unreadable_path(unreadable_path: AbsolutePathBuf) -> Per
                 path: unreadable_path,
             },
             access: FileSystemAccessMode::Deny,
+            missing_path_behavior: None,
         },
         FileSystemSandboxEntry {
             path: FileSystemPath::Special {
                 value: FileSystemSpecialPath::project_roots(/*subpath*/ None),
             },
             access: FileSystemAccessMode::Write,
+            missing_path_behavior: None,
         },
     ]);
     PermissionProfile::from_runtime_permissions(
@@ -251,6 +257,112 @@ fn apply_patch_responses(
     ]
 }
 
+async fn assert_apply_patch_crlf_update(
+    configure: impl FnOnce(TestCodexBuilder) -> TestCodexBuilder,
+    model_output: CrLfApplyPatchModelOutput,
+    expected: &str,
+) -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = apply_patch_harness_with(configure).await?;
+    let call_id = "apply-patch-crlf-rollout";
+    let file_name = "crlf.txt";
+    harness.write_file(file_name, "before\r\n").await?;
+    let patch = format!(
+        "*** Begin Patch\n*** Update File: {file_name}\n@@\n-before\n+after\n*** End Patch\n"
+    );
+    match model_output {
+        CrLfApplyPatchModelOutput::CustomTool => {
+            mount_apply_patch(&harness, call_id, &patch, "apply_patch done").await;
+        }
+        CrLfApplyPatchModelOutput::ShellCommandViaHeredoc => {
+            mount_apply_patch_model_output(
+                &harness,
+                call_id,
+                &patch,
+                "apply_patch done",
+                ApplyPatchModelOutput::ShellCommandViaHeredoc,
+            )
+            .await;
+        }
+    }
+
+    harness
+        .test()
+        .submit_turn_with_permission_profile(
+            "update the CRLF file with apply_patch",
+            PermissionProfile::Disabled,
+        )
+        .await?;
+
+    assert_eq!(harness.read_file_text(file_name).await?, expected);
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+enum CrLfApplyPatchModelOutput {
+    CustomTool,
+    ShellCommandViaHeredoc,
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_normalizes_crlf_without_preserve_line_endings_feature() -> Result<()> {
+    assert_apply_patch_crlf_update(
+        |builder| builder,
+        CrLfApplyPatchModelOutput::CustomTool,
+        "after\n",
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_preserves_crlf_with_preserve_line_endings_feature() -> Result<()> {
+    assert_apply_patch_crlf_update(
+        |builder| {
+            builder.with_config(|config| {
+                config
+                    .features
+                    .enable(Feature::ApplyPatchPreserveLineEndings)
+                    .expect("feature should be enabled");
+            })
+        },
+        CrLfApplyPatchModelOutput::CustomTool,
+        "after\r\n",
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_shell_heredoc_normalizes_crlf_without_preserve_line_endings_feature()
+-> Result<()> {
+    skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc");
+    assert_apply_patch_crlf_update(
+        |builder| builder,
+        CrLfApplyPatchModelOutput::ShellCommandViaHeredoc,
+        "after\n",
+    )
+    .await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_shell_heredoc_preserves_crlf_with_preserve_line_endings_feature() -> Result<()>
+{
+    skip_if_wine_exec!(Ok(()), "uses a POSIX shell heredoc");
+    assert_apply_patch_crlf_update(
+        |builder| {
+            builder.with_config(|config| {
+                config
+                    .features
+                    .enable(Feature::ApplyPatchPreserveLineEndings)
+                    .expect("feature should be enabled");
+            })
+        },
+        CrLfApplyPatchModelOutput::ShellCommandViaHeredoc,
+        "after\r\n",
+    )
+    .await
+}
+
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_cli_uses_codex_self_exe_with_linux_sandbox_helper_alias() -> Result<()> {
@@ -321,6 +433,60 @@ D delete.txt
         "line1\nchanged\n"
     );
     assert!(!harness.path_exists("delete.txt").await?);
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_cli_preserves_distinct_updated_paths() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = apply_patch_harness().await?;
+    harness.write_file("first.txt", "first before\n").await?;
+    harness.write_file("second.txt", "second before\n").await?;
+
+    let patch = "*** Begin Patch\n*** Update File: first.txt\n@@\n-first before\n+first after\n*** Update File: second.txt\n@@\n-second before\n+second after\n*** End Patch";
+    let call_id = "apply-distinct-updates";
+    mount_apply_patch(&harness, call_id, patch, "done").await;
+
+    harness.submit("please update both files").await?;
+
+    assert_regex_match(
+        r"(?s)^Exit code: 0.*Success\. Updated the following files:\nM first\.txt\nM second\.txt\n?$",
+        &harness.apply_patch_output(call_id).await,
+    );
+    assert_eq!(harness.read_file_text("first.txt").await?, "first after\n");
+    assert_eq!(
+        harness.read_file_text("second.txt").await?,
+        "second after\n"
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_cli_rejects_duplicate_resolved_paths() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+
+    let harness = apply_patch_harness().await?;
+    harness.write_file("duplicate.txt", "before\n").await?;
+
+    let patch = "*** Begin Patch\n*** Update File: duplicate.txt\n@@\n-before\n+first after\n*** Update File: ./duplicate.txt\n@@\n-before\n+second after\n*** End Patch";
+    let call_id = "apply-duplicate-resolved-path";
+    mount_apply_patch(&harness, call_id, patch, "done").await;
+
+    harness.submit("please apply both updates").await?;
+
+    let out = harness.apply_patch_output(call_id).await;
+    assert!(
+        out.contains("apply_patch verification failed"),
+        "expected verification failure: {out}"
+    );
+    assert!(
+        out.contains("multiple operations target"),
+        "expected duplicate-path diagnostics: {out}"
+    );
+    assert_eq!(harness.read_file_text("duplicate.txt").await?, "before\n");
 
     Ok(())
 }
@@ -1579,6 +1745,63 @@ async fn apply_patch_emits_turn_diff_event_with_unified_diff() -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn apply_patch_turn_diff_emits_portable_paths_for_remote_cwd() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    skip_if_no_remote_env!(Ok(()));
+
+    let harness = apply_patch_harness().await?;
+    let test = harness.test();
+    let codex = test.codex.clone();
+
+    let call_id = "apply-foreign-windows-diff";
+    let file = "nested/foreign.txt";
+    let patch = format!("*** Begin Patch\n*** Add File: {file}\n+hello\n*** End Patch");
+    mount_apply_patch(&harness, call_id, &patch, "ok").await;
+
+    submit_without_wait(&harness, "emit diff for a foreign Windows cwd").await?;
+
+    let mut last_diff = None;
+    wait_for_event(&codex, |event| match event {
+        EventMsg::TurnDiff(ev) => {
+            last_diff = Some(ev.unified_diff.clone());
+            false
+        }
+        EventMsg::TurnComplete(_) => true,
+        _ => false,
+    })
+    .await;
+
+    let cwd = &test.executor_environment().selection().cwd;
+    let file_uri = cwd.join(file)?;
+    let expected_relative_path = match test_target_os() {
+        TestTargetOs::Linux | TestTargetOs::MacOs => "nested/foreign.txt",
+        TestTargetOs::Windows => r"nested\foreign.txt",
+    };
+    assert_eq!(
+        file_uri.relative_path_from(cwd).as_deref(),
+        Some(expected_relative_path)
+    );
+    assert_eq!(
+        test.fs()
+            .read_file_text(&file_uri, /*sandbox*/ None)
+            .await?,
+        "hello\n"
+    );
+    assert_eq!(
+        last_diff.expect("expected TurnDiff event"),
+        r#"diff --git a/nested/foreign.txt b/nested/foreign.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..ce013625030ba8dba906f756967f9e9ca394464a
+--- /dev/null
++++ b/nested/foreign.txt
+@@ -0,0 +1 @@
++hello
+"#
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn apply_patch_turn_diff_tracks_local_and_remote_environment_paths() -> Result<()> {
     // TODO(anp): Remove after shared-cwd helpers use target-native paths.
     skip_if_target_windows!(
@@ -1785,8 +2008,8 @@ async fn apply_patch_aggregates_diff_across_multiple_tool_calls() -> Result<()> 
     .await;
 
     let diff = last_diff.expect("expected TurnDiff after two patches");
-    assert!(diff.contains("agg/a.txt"), "diff missing a.txt");
-    assert!(diff.contains("agg/b.txt"), "diff missing b.txt");
+    assert!(diff.contains("agg/a.txt"), "diff missing agg/a.txt: {diff}");
+    assert!(diff.contains("agg/b.txt"), "diff missing agg/b.txt: {diff}");
     // Final content reflects v2 for a.txt
     assert!(diff.contains("+v2\n") || diff.contains("v2\n"));
     Ok(())
