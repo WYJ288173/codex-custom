@@ -20,6 +20,7 @@ const SECRET_URL: &str = "https://oauth.example/authorize?state=DO_NOT_PERSIST";
 fn server(name: &str) -> McpServerStatus {
     McpServerStatus {
         name: name.to_string(),
+        plugin_id: None,
         server_info: None,
         tools: Default::default(),
         resources: Vec::new(),
@@ -782,8 +783,12 @@ async fn mcp_oauth_completion_notification_is_consumed_once_at_app_level() {
 
     app.handle_app_server_event(
         &app_server,
-        AppServerEvent::ServerNotification(ServerNotification::McpServerOauthLoginCompleted(
-            oauth_completion("sentry", false, Some("provider rejected login")),
+        AppServerEvent::ServerNotification(Box::new(
+            ServerNotification::McpServerOauthLoginCompleted(oauth_completion(
+                "sentry",
+                false,
+                Some("provider rejected login"),
+            )),
         )),
     )
     .await;

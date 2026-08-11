@@ -43,7 +43,7 @@ fn oauth_action(auth_status: McpAuthStatus) -> Option<&'static str> {
     match auth_status {
         McpAuthStatus::NotLoggedIn => Some("Authenticate"),
         McpAuthStatus::OAuth => Some("Re-authenticate"),
-        McpAuthStatus::BearerToken | McpAuthStatus::Unsupported => None,
+        McpAuthStatus::BearerToken | McpAuthStatus::Unknown | McpAuthStatus::Unsupported => None,
     }
 }
 
@@ -111,6 +111,7 @@ fn detail_params(server: McpServerStatus) -> SelectionViewParams {
     };
     let auth_label = match server.auth_status {
         McpAuthStatus::Unsupported => "Unsupported",
+        McpAuthStatus::Unknown => "Unknown",
         McpAuthStatus::NotLoggedIn => "Not logged in",
         McpAuthStatus::BearerToken => "Bearer token",
         McpAuthStatus::OAuth => "OAuth",
@@ -433,6 +434,7 @@ impl ChatWidget {
                     None => oauth_refresh_error_params(
                         McpServerStatus {
                             name: focus_server,
+                            plugin_id: None,
                             server_info: None,
                             tools: Default::default(),
                             resources: Vec::new(),
@@ -448,6 +450,7 @@ impl ChatWidget {
             (Err(error), Some(focus_server)) => oauth_refresh_error_params(
                 McpServerStatus {
                     name: focus_server,
+                    plugin_id: None,
                     server_info: None,
                     tools: Default::default(),
                     resources: Vec::new(),
