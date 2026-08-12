@@ -3888,6 +3888,48 @@ async fn manager_with_reusable_ready_server(
     manager
 }
 
+async fn reconcile_reusable_server_with_startup_policy(
+    previous: &McpConnectionSet,
+    config: McpServerConfig,
+    runtime_context: McpRuntimeContext,
+    startup_policy: McpStartupPolicy,
+    tool_catalog_cache: McpToolCatalogCache,
+) -> McpConnectionSet {
+    let codex_home = tempdir().expect("tempdir");
+    McpConnectionSet::new(
+        Some(previous),
+        McpPublicationGate::already_published(),
+        McpRuntimeInput {
+            startup_policy,
+            config: Arc::new(crate::mcp::tests::test_mcp_config(
+                codex_home.path().to_path_buf(),
+            )),
+            plugins_available: false,
+            ready_selected_capability_roots: Vec::new(),
+            mcp_servers: HashMap::from([(
+                "docs".to_string(),
+                EffectiveMcpServer::configured(config),
+            )]),
+            submit_id: "refresh".to_string(),
+            tx_event: None,
+            startup_cancellation_token: CancellationToken::new(),
+            runtime_context,
+            codex_apps_tools_cache: ConnectorRuntimeManager::default(),
+            tool_catalog_cache,
+            codex_apps_tools_cache_key: ConnectorRuntimeContextKey::personal(
+                /*account_id*/ None, /*chatgpt_user_id*/ None,
+            ),
+            client_mcp_extensions: ClientMcpExtensions::default(),
+            auth: None,
+            codex_apps_auth_manager: None,
+            elicitation_reviewer: None,
+            elicitation_lifecycle: None,
+        },
+        ElicitationRequestRouter::default(),
+    )
+    .await
+}
+
 async fn reconcile_reusable_server(
     previous: &McpConnectionSet,
     config: McpServerConfig,
@@ -3927,6 +3969,164 @@ async fn reconcile_reusable_server(
         ElicitationRequestRouter::default(),
     )
     .await
+}
+
+#[tokio::test]
+async fn lazy_cached_policy_defers_optional_remote_streamable_http_with_cached_tools() {
+    let runtime_context = reusable_server_runtime_context();
+    let config = reusable_server_config("http://127.0.0.1:1");
+    let previous = manager_with_reusable_ready_server(
+        &config,
+        &runtime_context,
+        vec![create_test_tool("docs", "search")],
+    )
+    .await;
+    let tool_catalog_cache = McpToolCatalogCache::default();
+    let environment = runtime_context
+        .resolve_server_environment("docs", &config)
+        .expect("resolve environment");
+    let cache_context = tool_catalog_cache
+        .context(
+            "docs",
+            &config,
+            &runtime_context,
+            environment.as_ref(),
+            (
+                &ElicitationCapability::default(),
+                &ClientMcpExtensions::default(),
+            ),
+            Some((
+                &reusable_server_identity(&config, &runtime_context),
+                crate::McpProtocolMode::Legacy,
+                /*is_agent_plugin*/ false,
+            )),
+        )
+        .expect("tool catalog cache context");
+    cache_context.publish_if_newest(
+        cache_context.begin_fetch(),
+        &[create_test_tool("docs", "search")],
+    );
+
+    let reconciled = reconcile_reusable_server_with_startup_policy(
+        &previous,
+        config,
+        runtime_context,
+        McpStartupPolicy::LazyWhenCached,
+        tool_catalog_cache,
+    )
+    .await;
+
+    assert!(
+        reconciled.servers["docs"].connection.startup_is_dormant(),
+        "optional remote streamable HTTP server with cached tools should start lazily"
+    );
+}
+
+#[tokio::test]
+async fn lazy_cached_policy_keeps_required_remote_streamable_http_eager() {
+    let runtime_context = reusable_server_runtime_context();
+    let mut config = reusable_server_config("http://127.0.0.1:1");
+    config.required = true;
+    let previous = manager_with_reusable_ready_server(
+        &config,
+        &runtime_context,
+        vec![create_test_tool("docs", "search")],
+    )
+    .await;
+    let tool_catalog_cache = McpToolCatalogCache::default();
+    let environment = runtime_context
+        .resolve_server_environment("docs", &config)
+        .expect("resolve environment");
+    let cache_context = tool_catalog_cache
+        .context(
+            "docs",
+            &config,
+            &runtime_context,
+            environment.as_ref(),
+            (
+                &ElicitationCapability::default(),
+                &ClientMcpExtensions::default(),
+            ),
+            Some((
+                &reusable_server_identity(&config, &runtime_context),
+                crate::McpProtocolMode::Legacy,
+                /*is_agent_plugin*/ false,
+            )),
+        )
+        .expect("tool catalog cache context");
+    cache_context.publish_if_newest(
+        cache_context.begin_fetch(),
+        &[create_test_tool("docs", "search")],
+    );
+
+    let reconciled = reconcile_reusable_server_with_startup_policy(
+        &previous,
+        config,
+        runtime_context,
+        McpStartupPolicy::LazyWhenCached,
+        tool_catalog_cache,
+    )
+    .await;
+
+    assert!(
+        !reconciled.servers["docs"].connection.startup_is_dormant(),
+        "required remote streamable HTTP server must remain eager"
+    );
+}
+
+#[tokio::test]
+async fn lazy_cached_policy_keeps_stdio_servers_eager_even_with_cached_tools() {
+    let runtime_context = reusable_server_runtime_context();
+    let mut config = reusable_server_config("http://127.0.0.1:1");
+    config.transport = McpServerTransportConfig::Stdio {
+        command: "docs-mcp".to_string(),
+        args: Vec::new(),
+        env: None,
+        env_vars: Vec::new(),
+        cwd: None,
+    };
+    let previous = manager_with_reusable_ready_server(
+        &config,
+        &runtime_context,
+        vec![create_test_tool("docs", "search")],
+    )
+    .await;
+    let tool_catalog_cache = McpToolCatalogCache::default();
+    let cache_context = tool_catalog_cache
+        .context(
+            "docs",
+            &config,
+            &runtime_context,
+            /*resolved_environment*/ None,
+            (
+                &ElicitationCapability::default(),
+                &ClientMcpExtensions::default(),
+            ),
+            Some((
+                &reusable_server_identity(&config, &runtime_context),
+                crate::McpProtocolMode::Legacy,
+                /*is_agent_plugin*/ false,
+            )),
+        )
+        .expect("tool catalog cache context");
+    cache_context.publish_if_newest(
+        cache_context.begin_fetch(),
+        &[create_test_tool("docs", "search")],
+    );
+
+    let reconciled = reconcile_reusable_server_with_startup_policy(
+        &previous,
+        config,
+        runtime_context,
+        McpStartupPolicy::LazyWhenCached,
+        tool_catalog_cache,
+    )
+    .await;
+
+    assert!(
+        !reconciled.servers["docs"].connection.startup_is_dormant(),
+        "stdio server must remain eager"
+    );
 }
 
 #[tokio::test]

@@ -7,6 +7,7 @@
 use super::session::SessionConfiguration;
 use super::*;
 use crate::mcp::McpRuntimeProjection;
+use codex_config::types::McpStartupMode;
 use codex_mcp::ElicitationReviewerHandle;
 use codex_mcp::McpStartupPolicy;
 use codex_mcp::PreparedMcpCall;
@@ -174,12 +175,16 @@ impl Session {
             codex_mcp::host_owned_codex_apps_enabled(&mcp_config, auth.as_ref())
                 .then(|| Arc::clone(&self.services.auth_manager));
 
+        let startup_policy = if matches!(desired.session_source, SessionSource::SubAgent(_))
+            || desired.config.mcp_startup_mode == McpStartupMode::LazyCachedRemote
+        {
+            McpStartupPolicy::LazyWhenCached
+        } else {
+            McpStartupPolicy::Eager
+        };
+
         McpRuntimeInput {
-            startup_policy: if matches!(desired.session_source, SessionSource::SubAgent(_)) {
-                McpStartupPolicy::LazyWhenCached
-            } else {
-                McpStartupPolicy::Eager
-            },
+            startup_policy,
             config: mcp_config,
             plugins_available,
             ready_selected_capability_roots: ready_selected_capability_roots.to_vec(),

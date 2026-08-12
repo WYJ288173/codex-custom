@@ -473,6 +473,10 @@ impl McpConnectionSet {
                 None
             };
             let has_runtime_auth = runtime_auth_provider.is_some();
+            let is_remote_streamable_http = matches!(
+                &configured_config.transport,
+                McpServerTransportConfig::StreamableHttp { .. }
+            );
             let async_managed_client = AsyncManagedClient::new(
                 server_name.clone(),
                 startup_submit_id.clone(),
@@ -494,6 +498,7 @@ impl McpConnectionSet {
             );
             let defer_startup = allow_deferred_startup
                 && !configured_config.required
+                && is_remote_streamable_http
                 && !tool_plugin_provenance.is_selected_plugin_mcp_server(&server_name)
                 && async_managed_client
                     .tool_catalog_cache_context
