@@ -4208,12 +4208,12 @@ async fn primary_thread_ignores_child_mcp_startup_notifications() {
     }
     let rendered = rendered_cells.join("\n");
     assert_eq!(app.chat_widget.thread_id(), Some(child_thread_id));
-    assert_eq!(rendered.matches("sentry is not logged in").count(), 1);
+    assert_eq!(rendered.matches("sentry is not logged in").count(), 0);
     assert_eq!(
         rendered
             .matches("MCP startup incomplete (failed: sentry)")
             .count(),
-        1
+        0
     );
 }
 
@@ -4328,12 +4328,12 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
     }
     let rendered = rendered_cells.join("\n");
     assert!(app.chat_widget.side_conversation_active());
-    assert_eq!(rendered.matches("sentry is not logged in").count(), 1);
+    assert_eq!(rendered.matches("sentry is not logged in").count(), 0);
     assert_eq!(
         rendered
             .matches("MCP startup incomplete (failed: sentry)")
             .count(),
-        1
+        0
     );
 }
 

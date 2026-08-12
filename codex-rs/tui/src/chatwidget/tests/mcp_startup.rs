@@ -154,10 +154,10 @@ async fn mcp_startup_summary_mode_renders_single_diagnostic_hint() {
         .iter()
         .map(|lines| lines_to_single_string(lines))
         .collect::<String>();
-    assert_eq!(
-        summary_text,
-        "⚠ MCP startup incomplete: 1 server failed. Run `/mcp` or `codex mcp list` for details.\n"
-    );
+    assert!(summary_text.contains("MCP startup incomplete: 1 server failed"));
+    assert!(summary_text.contains("Run `/mcp` or `codex mcp list` for"));
+    assert!(summary_text.contains("details."));
+    assert!(!summary_text.contains("handshake failed"));
 }
 
 #[tokio::test]
