@@ -47,6 +47,7 @@ use codex_config::types::McpServerEnvVar;
 use codex_config::types::McpServerOAuthConfig;
 use codex_config::types::McpServerToolConfig;
 use codex_config::types::McpServerTransportConfig;
+use codex_config::types::McpStartupMode;
 use codex_config::types::MemoriesConfig;
 use codex_config::types::MemoriesToml;
 use codex_config::types::ModelAvailabilityNuxConfig;
@@ -60,6 +61,7 @@ use codex_config::types::ResumeCwdMode;
 use codex_config::types::SandboxWorkspaceWrite;
 use codex_config::types::SessionPickerViewMode;
 use codex_config::types::SkillsConfig;
+use codex_config::types::StartupNoticeLevel;
 use codex_config::types::StatusLineLayout;
 use codex_config::types::ToolSuggestDisabledTool;
 use codex_config::types::ToolSuggestDiscoverableType;
@@ -67,6 +69,7 @@ use codex_config::types::Tui;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::TuiStartupNotices;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_config::types::WindowsToml;
 use codex_exec_server::LOCAL_FS;
@@ -1096,6 +1099,7 @@ fn config_toml_deserializes_model_availability_nux() {
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
             show_tooltips: true,
+            startup_notices: TuiStartupNotices::default(),
             vim_mode_default: false,
             raw_output_mode: false,
             alternate_screen: AltScreenMode::default(),
@@ -1178,6 +1182,54 @@ status_line_layout = "claude"
             .status_line_layout,
         StatusLineLayout::Claude
     );
+}
+
+#[test]
+fn config_toml_deserializes_startup_customization_policy() {
+    let cfg: ConfigToml = toml::from_str(
+        r#"
+[tui.startup_notices]
+skill_load_errors = "summary"
+mcp_startup_errors = "verbose"
+mcp_startup_mode = "eager"
+"#,
+    )
+    .expect("TOML deserialization should succeed for startup notices config");
+    let startup_notices = cfg
+        .tui
+        .expect("tui config should deserialize")
+        .startup_notices;
+
+    assert_eq!(
+        startup_notices.skill_load_errors,
+        StartupNoticeLevel::Summary
+    );
+    assert_eq!(
+        startup_notices.mcp_startup_errors,
+        StartupNoticeLevel::Verbose
+    );
+    assert_eq!(startup_notices.mcp_startup_mode, McpStartupMode::Eager);
+}
+
+#[tokio::test]
+async fn startup_customization_defaults_match_claude_code_style() {
+    let config = Config::load_from_base_config_with_overrides(
+        ConfigToml::default(),
+        ConfigOverrides::default(),
+        tempdir().expect("tempdir").abs(),
+    )
+    .await
+    .expect("config should load");
+
+    assert_eq!(
+        config.tui_startup_notices.skill_load_errors,
+        StartupNoticeLevel::Quiet
+    );
+    assert_eq!(
+        config.tui_startup_notices.mcp_startup_errors,
+        StartupNoticeLevel::Quiet
+    );
+    assert_eq!(config.mcp_startup_mode, McpStartupMode::LazyCachedRemote);
 }
 
 #[test]
@@ -4014,6 +4066,7 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             notification_settings: TuiNotificationSettings::default(),
             animations: true,
             show_tooltips: true,
+            startup_notices: TuiStartupNotices::default(),
             vim_mode_default: false,
             raw_output_mode: false,
             alternate_screen: AltScreenMode::Auto,

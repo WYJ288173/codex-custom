@@ -38,6 +38,7 @@ use codex_config::types::AuthKeyringBackendKind;
 use codex_config::types::History;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerDisabledReason;
+use codex_config::types::McpStartupMode;
 use codex_config::types::MemoriesConfig;
 use codex_config::types::ModelAvailabilityNuxConfig;
 use codex_config::types::Notice;
@@ -51,6 +52,7 @@ use codex_config::types::ToolSuggestDiscoverable;
 use codex_config::types::TuiKeymap;
 use codex_config::types::TuiNotificationSettings;
 use codex_config::types::TuiPetAnchor;
+use codex_config::types::TuiStartupNotices;
 use codex_config::types::UriBasedFileOpener;
 use codex_config::types::WindowsSandboxModeToml;
 use codex_core_plugins::PluginLoadOutcome;
@@ -754,6 +756,12 @@ pub struct Config {
 
     /// Show startup tooltips in the TUI welcome screen.
     pub show_tooltips: bool,
+
+    /// Controls non-fatal startup diagnostics and lazy/cached MCP startup behavior.
+    pub tui_startup_notices: TuiStartupNotices,
+
+    /// Controls whether optional remote MCP servers with cached tools are started lazily.
+    pub mcp_startup_mode: McpStartupMode,
 
     /// Persisted startup availability NUX state for model tooltips.
     pub model_availability_nux: ModelAvailabilityNuxConfig,
@@ -4255,6 +4263,16 @@ impl Config {
                 .unwrap_or_default(),
             animations: cfg.tui.as_ref().map(|t| t.animations).unwrap_or(true),
             show_tooltips: cfg.tui.as_ref().map(|t| t.show_tooltips).unwrap_or(true),
+            tui_startup_notices: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.startup_notices)
+                .unwrap_or_default(),
+            mcp_startup_mode: cfg
+                .tui
+                .as_ref()
+                .map(|t| t.startup_notices.mcp_startup_mode)
+                .unwrap_or_default(),
             model_availability_nux: cfg
                 .tui
                 .as_ref()

@@ -695,6 +695,39 @@ pub enum StatusLineLayout {
     Claude,
 }
 
+/// Controls how non-fatal startup diagnostics are rendered in the TUI transcript.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum StartupNoticeLevel {
+    #[default]
+    Quiet,
+    Summary,
+    Verbose,
+}
+
+/// Controls when MCP servers are started during TUI startup.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum McpStartupMode {
+    Eager,
+    #[default]
+    LazyCachedRemote,
+}
+
+/// Startup customization behavior for non-fatal TUI diagnostics and MCP startup.
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
+#[schemars(deny_unknown_fields)]
+pub struct TuiStartupNotices {
+    #[serde(default)]
+    pub skill_load_errors: StartupNoticeLevel,
+
+    #[serde(default)]
+    pub mcp_startup_errors: StartupNoticeLevel,
+
+    #[serde(default)]
+    pub mcp_startup_mode: McpStartupMode,
+}
+
 /// Collection of settings that are specific to the TUI.
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default, JsonSchema)]
 #[schemars(deny_unknown_fields)]
@@ -711,6 +744,10 @@ pub struct Tui {
     /// Defaults to `true`.
     #[serde(default = "default_true")]
     pub show_tooltips: bool,
+
+    /// Controls non-fatal startup diagnostics and lazy/cached MCP startup behavior.
+    #[serde(default)]
+    pub startup_notices: TuiStartupNotices,
 
     /// Start the composer in Vim mode (`Normal`) by default.
     /// Defaults to `false`.
