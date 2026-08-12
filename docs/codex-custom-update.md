@@ -16,7 +16,37 @@ openai/codex upstream/main
 
 Workflow: `.github/workflows/codex-custom-sync.yml`.
 
-Manual run is the normal path:
+The preferred local shortcut is:
+
+```bash
+codex-custom-update
+```
+
+or, from the repository:
+
+```bash
+scripts/codex-custom-update
+```
+
+The shortcut triggers `codex-custom-sync` on `feature/claude-style-statusline`
+with `publish_release=true`, waits 30 minutes before the first status check, then
+checks every 20 minutes. It installs only after the exact GitHub run succeeds and
+the matching prerelease asset is found.
+
+Useful variants:
+
+```bash
+# Check/install an already-triggered run.
+scripts/codex-custom-update --run-id 123456789
+
+# Verify the release but do not install it.
+scripts/codex-custom-update --no-install
+
+# Use a shorter cadence for debugging only.
+scripts/codex-custom-update --first-wait-sec 60 --poll-sec 60
+```
+
+Manual GitHub UI run is also supported:
 
 1. Open GitHub Actions.
 2. Run `codex-custom-sync` on `feature/claude-style-statusline`.
