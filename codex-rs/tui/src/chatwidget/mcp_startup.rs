@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 
 use codex_app_server_protocol::McpServerStartupState;
 use codex_app_server_protocol::McpServerStatusUpdatedNotification;
+use codex_config::types::StartupNoticeLevel;
 
 use super::ChatWidget;
 
@@ -23,6 +24,13 @@ pub(crate) enum McpStartupStatus {
 }
 
 impl ChatWidget {
+    fn should_render_verbose_mcp_startup_warnings(&self) -> bool {
+        matches!(
+            self.config.tui_startup_notices.mcp_startup_errors,
+            StartupNoticeLevel::Verbose
+        )
+    }
+
     /// Record one MCP startup update, promoting it into either the active startup
     /// round or a buffered "next" round.
     ///
@@ -87,7 +95,7 @@ impl ChatWidget {
                     startup_status.get(&server),
                     Some(McpStartupStatus::Failed { error: previous }) if previous == error
                 );
-                if !already_reported {
+                if !already_reported && self.should_render_verbose_mcp_startup_warnings() {
                     self.on_warning(error);
                 }
             }
@@ -98,7 +106,9 @@ impl ChatWidget {
             // A promoted buffered round may already contain terminal failures.
             for state in startup_status.values() {
                 if let McpStartupStatus::Failed { error } = state {
-                    self.on_warning(error);
+                    if self.should_render_verbose_mcp_startup_warnings() {
+                        self.on_warning(error);
+                    }
                 }
             }
         }
@@ -183,18 +193,46 @@ impl ChatWidget {
     }
 
     pub(super) fn finish_mcp_startup(&mut self, failed: Vec<String>, cancelled: Vec<String>) {
-        if !cancelled.is_empty() {
-            self.on_warning(format!(
-                "MCP startup interrupted. The following servers were not initialized: {}",
-                cancelled.join(", ")
-            ));
-        }
-        let mut parts = Vec::new();
-        if !failed.is_empty() {
-            parts.push(format!("failed: {}", failed.join(", ")));
-        }
-        if !parts.is_empty() {
-            self.on_warning(format!("MCP startup incomplete ({})", parts.join("; ")));
+        match self.config.tui_startup_notices.mcp_startup_errors {
+            StartupNoticeLevel::Quiet => {}
+            StartupNoticeLevel::Summary => {
+                let mut parts = Vec::new();
+                if !failed.is_empty() {
+                    parts.push(format!(
+                        "{} server{} failed",
+                        failed.len(),
+                        if failed.len() == 1 { "" } else { "s" }
+                    ));
+                }
+                if !cancelled.is_empty() {
+                    parts.push(format!(
+                        "{} server{} interrupted",
+                        cancelled.len(),
+                        if cancelled.len() == 1 { "" } else { "s" }
+                    ));
+                }
+                if !parts.is_empty() {
+                    self.on_warning(format!(
+                        "MCP startup incomplete: {}. Run `/mcp` or `codex mcp list` for details.",
+                        parts.join(", ")
+                    ));
+                }
+            }
+            StartupNoticeLevel::Verbose => {
+                if !cancelled.is_empty() {
+                    self.on_warning(format!(
+                        "MCP startup interrupted. The following servers were not initialized: {}",
+                        cancelled.join(", ")
+                    ));
+                }
+                let mut parts = Vec::new();
+                if !failed.is_empty() {
+                    parts.push(format!("failed: {}", failed.join(", ")));
+                }
+                if !parts.is_empty() {
+                    self.on_warning(format!("MCP startup incomplete ({})", parts.join("; ")));
+                }
+            }
         }
 
         let mcp_startup_owned_status = self.status_header_is_mcp_startup_owned();
