@@ -55,6 +55,15 @@ jobs:
           git fetch upstream main
           git rebase upstream/main
 
+      - name: Keep custom workflow definitions
+        run: |
+          set -euo pipefail
+          git checkout "origin/${CUSTOM_BRANCH}" -- .github/workflows
+          if ! git diff --quiet -- .github/workflows; then
+            git add .github/workflows
+            git commit -m "chore: keep custom workflow definitions"
+          fi
+
       - name: Verify custom sync contract
         run: python3 -m unittest scripts/test_codex_custom_sync.py
 
