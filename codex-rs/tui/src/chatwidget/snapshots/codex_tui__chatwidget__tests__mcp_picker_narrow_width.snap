@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 156
+expression: rendered
+---
+  MCP servers
+
+› 1. ✓ alpha-connecte… 2 tools
+  2. ! middle-auth     Needs auth…
+  3. × zeta-unavailab… Unavailabl…
+
+  ↑↓ Navigate  Enter Details  Esc Cl

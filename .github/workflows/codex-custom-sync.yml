@@ -1,0 +1,185 @@
+name: codex-custom-sync
+
+on:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Create a GitHub release when sync and validation pass"
+        required: true
+        default: "false"
+        type: choice
+        options:
+          - "false"
+          - "true"
+  schedule:
+    - cron: "30 20 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: codex-custom-sync
+  cancel-in-progress: false
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CUSTOM_BRANCH: feature/claude-style-statusline
+  UPSTREAM_REPO: https://github.com/openai/codex.git
+  TARGET: aarch64-apple-darwin
+
+jobs:
+  sync-build:
+    name: Sync with upstream and build custom CLI
+    runs-on: macos-latest
+    # macos-latest is substantially slower than the macos-15-xlarge runners
+    # used by upstream releases. This job also validates both custom crates
+    # before compiling the release profile, so allow enough time for a cold
+    # standard-runner build.
+    timeout-minutes: 180
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.CUSTOM_BRANCH }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Rebase custom branch onto upstream/main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream main
+          git rebase upstream/main
+
+      - name: Keep custom workflow definitions
+        run: |
+          set -euo pipefail
+          git checkout "origin/${CUSTOM_BRANCH}" -- .github/workflows
+          if ! git diff --quiet -- .github/workflows; then
+            git add .github/workflows
+            git commit -m "chore: keep custom workflow definitions"
+          fi
+
+      - name: Verify custom sync contract
+        run: python3 -m unittest scripts/test_codex_custom_sync.py
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ env.TARGET }}
+          components: rustfmt
+
+      - name: Resolve custom version
+        id: custom_version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          upstream_tag="$(gh api repos/openai/codex/releases/latest --jq .tag_name)"
+          if [[ ! "$upstream_tag" =~ ^rust-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+            echo "Unsupported upstream Codex release tag: ${upstream_tag}" >&2
+            exit 1
+          fi
+          upstream_version="${BASH_REMATCH[1]}"
+          custom_version="${upstream_version}-custom.1"
+          python3 - "$custom_version" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          version = sys.argv[1]
+          cargo_toml = Path("codex-rs/Cargo.toml")
+          text = cargo_toml.read_text()
+          updated, count = re.subn(
+              r'(?m)^(\[workspace\.package\]\nversion = ")[^"]+(")',
+              rf"\g<1>{version}\2",
+              text,
+              count=1,
+          )
+          if count != 1:
+              raise SystemExit("workspace package version not found")
+          cargo_toml.write_text(updated)
+          PY
+          {
+            echo "upstream_tag=${upstream_tag}"
+            echo "upstream_version=${upstream_version}"
+            echo "custom_version=${custom_version}"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Update workspace lockfile version
+        working-directory: codex-rs
+        run: cargo update --workspace
+
+      - name: Validate focused custom surface
+        working-directory: codex-rs
+        env:
+          RUST_MIN_STACK: "8388608"
+        run: |
+          set -euo pipefail
+          cargo fmt -- --config imports_granularity=Item --check
+          cargo test -p codex-tui
+          cargo test -p codex-cli
+
+      - name: Build release binary
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
+          cargo build --target "$TARGET" --release --bin codex
+
+      - name: Package artifact
+        id: package
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short=12 HEAD)"
+          version="${{ steps.custom_version.outputs.custom_version }}"
+          release_name="codex-custom-${version}-${short_sha}"
+          package_dir="${RUNNER_TEMP}/${release_name}"
+          mkdir -p "$package_dir"
+          cp "codex-rs/target/${TARGET}/release/codex" "$package_dir/codex-custom"
+          chmod 0755 "$package_dir/codex-custom"
+          cp scripts/install-codex-custom.sh "$package_dir/install-codex-custom.sh"
+          cp docs/codex-custom-update.md "$package_dir/README.md"
+          tar -C "$package_dir" -czf "${release_name}-${TARGET}.tar.gz" .
+          shasum -a 256 "${release_name}-${TARGET}.tar.gz" > "${release_name}-${TARGET}.tar.gz.sha256"
+          {
+            echo "short_sha=${short_sha}"
+            echo "version=${version}"
+            echo "release_name=${release_name}"
+            echo "archive=${release_name}-${TARGET}.tar.gz"
+            echo "checksum=${release_name}-${TARGET}.tar.gz.sha256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ steps.package.outputs.release_name }}-${{ env.TARGET }}
+          path: |
+            ${{ steps.package.outputs.archive }}
+            ${{ steps.package.outputs.checksum }}
+
+      - name: Push rebased custom branch
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' }}
+        run: |
+          set -euo pipefail
+          git push --force-with-lease origin "HEAD:${CUSTOM_BRANCH}"
+
+      - name: Create GitHub release
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_NAME: ${{ steps.package.outputs.release_name }}
+          ARCHIVE: ${{ steps.package.outputs.archive }}
+          CHECKSUM: ${{ steps.package.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_NAME" \
+            "$ARCHIVE" \
+            "$CHECKSUM" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$CUSTOM_BRANCH" \
+            --title "$RELEASE_NAME" \
+            --notes "Codex custom build based on ${{ steps.custom_version.outputs.upstream_tag }} and rebased onto upstream/main at $(git rev-parse --short=12 upstream/main)." \
+            --prerelease

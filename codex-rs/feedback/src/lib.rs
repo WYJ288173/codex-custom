@@ -18,6 +18,7 @@ use codex_protocol::protocol::SessionSource;
 use tracing::Event;
 use tracing::Level;
 use tracing::field::Visit;
+use tracing::level_filters::LevelFilter;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::fmt::writer::MakeWriter;
@@ -30,6 +31,10 @@ pub use feedback_diagnostics::FeedbackDiagnostics;
 
 /// Filename used for the redacted `codex doctor --json` feedback attachment.
 pub const DOCTOR_REPORT_ATTACHMENT_FILENAME: &str = "codex-doctor-report.json";
+/// Filename used for the raw Codex Apps MCP tools cache feedback attachment.
+pub const CODEX_APPS_TOOLS_CACHE_ATTACHMENT_FILENAME: &str = "codex-apps-tools-cache.json";
+/// Filename used for the raw connector directory cache feedback attachment.
+pub const CODEX_APP_DIRECTORY_CACHE_ATTACHMENT_FILENAME: &str = "codex-app-directory-cache.json";
 /// Filename used for the Windows sandbox log feedback attachment.
 pub const WINDOWS_SANDBOX_LOG_ATTACHMENT_FILENAME: &str = "windows-sandbox.log";
 const DEFAULT_MAX_BYTES: usize = 4 * 1024 * 1024; // 4 MiB
@@ -189,7 +194,7 @@ impl CodexFeedback {
         }
     }
 
-    /// Returns a [`tracing_subscriber`] layer that captures full-fidelity logs into this feedback
+    /// Returns a [`tracing_subscriber`] layer that captures diagnostic logs into this feedback
     /// ring buffer.
     ///
     /// This is intended for initialization code so call sites don't have to duplicate the exact
@@ -203,9 +208,20 @@ impl CodexFeedback {
             .with_timer(tracing_subscriber::fmt::time::SystemTime)
             .with_ansi(false)
             .with_target(false)
-            // Capture everything, regardless of the caller's `RUST_LOG`, so feedback includes the
-            // full trace when the user uploads a report.
-            .with_filter(Targets::new().with_default(Level::TRACE))
+            // Capture diagnostics independently of `RUST_LOG` without filling the feedback ring
+            // with high-volume request and response payloads.
+            .with_filter(
+                Targets::new()
+                    .with_default(Level::TRACE)
+                    .with_target("codex_http_client::transport", LevelFilter::DEBUG)
+                    .with_target("codex_api::sse", LevelFilter::DEBUG)
+                    // `tracing-log` checks legacy log records against their original
+                    // target before re-emitting them as `log`; tungstenite TRACE
+                    // includes full websocket frames and authenticated handshakes.
+                    .with_target("tungstenite", LevelFilter::DEBUG)
+                    .with_target("codex_api::responses_websocket_timing", LevelFilter::OFF)
+                    .with_target("codex_core::post_sampling_token_estimate", LevelFilter::OFF),
+            )
     }
 
     /// Returns a [`tracing_subscriber`] layer that collects structured metadata for feedback.
@@ -386,10 +402,6 @@ pub struct FeedbackUploadOptions<'a> {
 }
 
 impl FeedbackSnapshot {
-    pub(crate) fn as_bytes(&self) -> &[u8] {
-        &self.bytes
-    }
-
     pub fn feedback_diagnostics(&self) -> &FeedbackDiagnostics {
         &self.feedback_diagnostics
     }
@@ -405,14 +417,6 @@ impl FeedbackSnapshot {
         }
 
         self.feedback_diagnostics.attachment_text()
-    }
-
-    pub fn save_to_temp_file(&self) -> io::Result<PathBuf> {
-        let dir = std::env::temp_dir();
-        let filename = format!("codex-feedback-{}.log", self.thread_id);
-        let path = dir.join(filename);
-        fs::write(&path, self.as_bytes())?;
-        Ok(path)
     }
 
     /// Upload feedback to Sentry with optional attachments.
@@ -719,7 +723,54 @@ mod tests {
         }
         let snap = fb.snapshot(/*session_id*/ None);
         // Capacity 8: after writing 10 bytes, we should keep the last 8.
-        pretty_assertions::assert_eq!(std::str::from_utf8(snap.as_bytes()).unwrap(), "cdefghij");
+        pretty_assertions::assert_eq!(std::str::from_utf8(&snap.bytes).unwrap(), "cdefghij");
+    }
+
+    #[test]
+    fn logger_layer_filters_noisy_trace_payloads() {
+        let fb = CodexFeedback::new();
+        let _guard = tracing_subscriber::registry()
+            // Keep another TRACE subscriber interested so bridged records are
+            // emitted; feedback must still reject them with its own filter.
+            .with(tracing_subscriber::fmt::layer().with_writer(std::io::sink))
+            .with(fb.logger_layer())
+            .set_default();
+
+        tracing::trace!(target: "codex_api::responses_websocket_timing", payload = "secret");
+        tracing::trace!(target: "codex_http_client::transport", "transport-trace");
+        tracing::trace!(target: "codex_api::sse", "sse-trace");
+        tracing::trace!(target: "codex_api::sse::responses", "nested-sse-trace");
+        tracing::debug!(target: "codex_http_client::transport", "transport-debug");
+        tracing::debug!(target: "codex_api::sse::responses", "sse-debug");
+        tracing::trace!(target: "codex_feedback_test", "unrelated-trace");
+        log::trace!(target: "codex_feedback_test", "unrelated-log-trace");
+        log::trace!(
+            target: "tungstenite::handshake::client",
+            "websocket-handshake-payload"
+        );
+        log::trace!(target: "tungstenite::protocol", "websocket-frame-payload");
+        log::debug!(target: "tungstenite::protocol", "websocket-debug");
+
+        let logs = String::from_utf8(fb.snapshot(/*session_id*/ None).bytes).unwrap();
+        for excluded in [
+            "secret",
+            "transport-trace",
+            "sse-trace",
+            "nested-sse-trace",
+            "websocket-handshake-payload",
+            "websocket-frame-payload",
+        ] {
+            assert!(!logs.contains(excluded));
+        }
+        for retained in [
+            "transport-debug",
+            "sse-debug",
+            "unrelated-trace",
+            "unrelated-log-trace",
+            "websocket-debug",
+        ] {
+            assert!(logs.contains(retained));
+        }
     }
 
     #[test]
@@ -881,6 +932,7 @@ mod tests {
         tags.insert("reason".to_string(), "wrong-reason".to_string());
         tags.insert("account_id".to_string(), "actual-account".to_string());
         tags.insert("model".to_string(), "gpt-5".to_string());
+        tags.insert("effort".to_string(), "Some(High)".to_string());
         let snapshot = FeedbackSnapshot {
             bytes: Vec::new(),
             tags,
@@ -904,6 +956,8 @@ mod tests {
         );
         client_tags.insert("reason".to_string(), "wrong-client-reason".to_string());
         client_tags.insert("client_tag".to_string(), "from-client".to_string());
+        client_tags.insert("model".to_string(), "mewthree".to_string());
+        client_tags.insert("effort".to_string(), "Some(Ultra)".to_string());
 
         let upload_tags = snapshot.upload_tags(
             "bug",
@@ -937,9 +991,16 @@ mod tests {
             Some("actual-account")
         );
         assert_eq!(
+            upload_tags.get("model").map(String::as_str),
+            Some("mewthree")
+        );
+        assert_eq!(
+            upload_tags.get("effort").map(String::as_str),
+            Some("Some(Ultra)")
+        );
+        assert_eq!(
             upload_tags.get("client_tag").map(String::as_str),
             Some("from-client")
         );
-        assert_eq!(upload_tags.get("model").map(String::as_str), Some("gpt-5"));
     }
 }

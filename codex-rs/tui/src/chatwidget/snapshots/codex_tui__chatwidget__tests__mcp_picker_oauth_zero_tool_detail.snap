@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 229
+expression: rendered
+---
+  MCP server · oauth-server
+  State: Connected · Authentication: OAuth · 0 tools
+
+› 1. Re-authenticate
+
+  ↑↓ Navigate  Enter Select  Esc Back

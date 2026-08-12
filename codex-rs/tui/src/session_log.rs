@@ -125,8 +125,21 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
         return;
     }
 
+    if let Some(metadata) = safe_app_event_metadata(event) {
+        let mut value = json!({
+            "ts": now_ts(),
+            "dir": "to_tui",
+            "kind": "app_event",
+        });
+        if let (Some(record), Some(metadata)) = (value.as_object_mut(), metadata.as_object()) {
+            record.extend(metadata.clone());
+        }
+        LOGGER.write_json_line(value);
+        return;
+    }
+
     match event {
-        AppEvent::NewSession => {
+        AppEvent::NewSession { .. } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",
@@ -134,7 +147,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
             });
             LOGGER.write_json_line(value);
         }
-        AppEvent::ClearUi => {
+        AppEvent::ClearUi { .. } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",
@@ -210,6 +223,55 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
     }
 }
 
+fn oauth_app_event_metadata(event: &AppEvent) -> Option<(&'static str, Option<bool>)> {
+    match event {
+        AppEvent::StartMcpOauth { .. } => Some(("StartMcpOauth", None)),
+        AppEvent::McpOauthLoginStarted { result, .. } => {
+            Some(("McpOauthLoginStarted", Some(result.is_ok())))
+        }
+        AppEvent::OpenPendingMcpOauthUrl { .. } => Some(("OpenPendingMcpOauthUrl", None)),
+        AppEvent::McpOauthRefreshFinished { result, .. } => {
+            Some(("McpOauthRefreshFinished", Some(result.is_ok())))
+        }
+        AppEvent::DismissMcpViews => Some(("DismissMcpViews", None)),
+        _ => None,
+    }
+}
+
+fn safe_app_event_metadata(event: &AppEvent) -> Option<serde_json::Value> {
+    if let Some((variant, ok)) = oauth_app_event_metadata(event) {
+        return Some(json!({
+            "variant": variant,
+            "ok": ok,
+        }));
+    }
+
+    match event {
+        AppEvent::McpInventoryLoaded { result, detail, .. } => Some(json!({
+            "variant": "McpInventoryLoaded",
+            "ok": result.is_ok(),
+            "count": result.as_ref().ok().map(Vec::len),
+            "detail": detail,
+        })),
+        AppEvent::McpPickerInventoryLoaded { result, .. } => Some(json!({
+            "variant": "McpPickerInventoryLoaded",
+            "ok": result.is_ok(),
+            "count": result.as_ref().ok().map(Vec::len),
+        })),
+        AppEvent::OpenMcpServerDetail { server } => Some(json!({
+            "variant": "OpenMcpServerDetail",
+            "server": server.name,
+            "tool_count": server.tools.len(),
+        })),
+        AppEvent::OpenMcpServerTools { server } => Some(json!({
+            "variant": "OpenMcpServerTools",
+            "server": server.name,
+            "tool_count": server.tools.len(),
+        })),
+        _ => None,
+    }
+}
+
 pub(crate) fn log_outbound_op(op: &AppCommand) {
     if !LOGGER.is_enabled() {
         return;
@@ -241,3 +303,7 @@ where
     });
     LOGGER.write_json_line(value);
 }
+
+#[cfg(test)]
+#[path = "session_log_tests.rs"]
+mod tests;

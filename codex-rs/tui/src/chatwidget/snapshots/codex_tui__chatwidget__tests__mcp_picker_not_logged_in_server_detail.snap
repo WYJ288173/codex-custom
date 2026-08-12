@@ -1,0 +1,12 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 214
+expression: rendered
+---
+  MCP server · middle-auth
+  State: Needs authentication · Authentication: Not logged in · 2 tools
+
+› 1. View tools (2)
+  2. Authenticate
+
+  ↑↓ Navigate  Enter Select  Esc Back

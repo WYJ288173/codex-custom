@@ -56,7 +56,35 @@ impl App {
         });
     }
 
-    fn mcp_inventory_request_thread_id(&self, thread_id: Option<ThreadId>) -> Option<ThreadId> {
+    pub(super) fn fetch_mcp_picker_inventory(
+        &mut self,
+        app_server: &AppServerSession,
+        thread_id: Option<ThreadId>,
+        focus_server: Option<String>,
+    ) {
+        let request_handle = app_server.request_handle();
+        let app_event_tx = self.app_event_tx.clone();
+        let request_thread_id = self.mcp_inventory_request_thread_id(thread_id);
+        tokio::spawn(async move {
+            let result = fetch_all_mcp_server_statuses(
+                request_handle,
+                McpServerStatusDetail::ToolsAndAuthOnly,
+                request_thread_id,
+            )
+            .await
+            .map_err(|err| err.to_string());
+            app_event_tx.send(AppEvent::McpPickerInventoryLoaded {
+                result,
+                thread_id,
+                focus_server,
+            });
+        });
+    }
+
+    pub(super) fn mcp_inventory_request_thread_id(
+        &self,
+        thread_id: Option<ThreadId>,
+    ) -> Option<ThreadId> {
         thread_id.filter(|thread_id| {
             self.active_thread_id == Some(*thread_id)
                 && self
@@ -80,6 +108,7 @@ impl App {
     ) {
         let request_handle = app_server.request_handle();
         let app_event_tx = self.app_event_tx.clone();
+        let hard_stop_generation = self.rate_limit_hard_stop_generation;
         tokio::spawn(async move {
             let request = fetch_account_rate_limits(request_handle);
             let result = match origin {
@@ -96,7 +125,11 @@ impl App {
                     request.await.map_err(|err| err.to_string())
                 }
             };
-            app_event_tx.send(AppEvent::RateLimitsLoaded { origin, result });
+            app_event_tx.send(AppEvent::RateLimitsLoaded {
+                origin,
+                hard_stop_generation,
+                result,
+            });
         });
     }
 
@@ -116,6 +149,32 @@ impl App {
             .map_err(|_| "account/usage/read timed out in TUI".to_string())
             .and_then(|result| result.map_err(|err| err.to_string()));
             app_event_tx.send(AppEvent::TokenActivityLoaded { request_id, result });
+        });
+    }
+
+    pub(super) fn refresh_status_line_account_usage(
+        &mut self,
+        _app_server: &AppServerSession,
+        request_id: u64,
+    ) {
+        let app_event_tx = self.app_event_tx.clone();
+        let codex_home = self.config.codex_home.clone();
+        tokio::spawn(async move {
+            let result = tokio::time::timeout(
+                TOKEN_ACTIVITY_FETCH_TIMEOUT,
+                tokio::task::spawn_blocking(move || {
+                    crate::status_line_account_usage::summarize_local_rollout_usage(
+                        codex_home.as_path(),
+                    )
+                    .map_err(|err| err.to_string())
+                }),
+            )
+            .await
+            .map_err(|_| "account/usage/read timed out in TUI".to_string())
+            .and_then(|join_result| {
+                join_result.map_err(|err| format!("account usage scan failed: {err}"))?
+            });
+            app_event_tx.send(AppEvent::StatusLineAccountUsageLoaded { request_id, result });
         });
     }
 
@@ -621,7 +680,7 @@ impl App {
             {
                 guard
                     .pending_interactive_replay
-                    .note_evicted_server_request(request);
+                    .note_evicted_server_request(request.as_ref());
             }
             guard.active
         };
@@ -700,6 +759,20 @@ impl App {
             .add_to_history(history_cell::new_mcp_tools_output_from_statuses(
                 &statuses, detail,
             ));
+    }
+
+    pub(super) fn handle_mcp_picker_inventory_result(
+        &mut self,
+        result: Result<Vec<McpServerStatus>, String>,
+        thread_id: Option<ThreadId>,
+        focus_server: Option<String>,
+    ) {
+        if thread_id.is_some() && thread_id != self.current_displayed_thread_id() {
+            return;
+        }
+
+        self.chat_widget
+            .on_mcp_picker_inventory_loaded(result, focus_server);
     }
 
     pub(super) fn clear_committed_mcp_inventory_loading(&mut self) {
@@ -1023,6 +1096,7 @@ async fn request_plugin_list_with_marketplace_kinds(
             params: PluginListParams {
                 cwds: Some(vec![cwd]),
                 marketplace_kinds,
+                force_refetch: false,
             },
         })
         .await
@@ -1128,6 +1202,7 @@ pub(super) async fn fetch_plugin_install(
             params: PluginInstallParams {
                 marketplace_path,
                 remote_marketplace_name,
+                install_attempt_id: None,
                 plugin_name,
             },
         })
@@ -1257,6 +1332,7 @@ pub(super) fn mcp_inventory_maps_from_statuses(statuses: Vec<McpServerStatus>) -
         auth_statuses.insert(
             server_name.clone(),
             match status.auth_status {
+                codex_app_server_protocol::McpAuthStatus::Unknown => McpAuthStatus::Unknown,
                 codex_app_server_protocol::McpAuthStatus::Unsupported => McpAuthStatus::Unsupported,
                 codex_app_server_protocol::McpAuthStatus::NotLoggedIn => McpAuthStatus::NotLoggedIn,
                 codex_app_server_protocol::McpAuthStatus::BearerToken => McpAuthStatus::BearerToken,
@@ -1435,6 +1511,7 @@ mod tests {
         let statuses = vec![
             McpServerStatus {
                 name: "docs".to_string(),
+                plugin_id: None,
                 server_info: None,
                 tools: HashMap::from([(
                     "list".to_string(),
@@ -1455,6 +1532,7 @@ mod tests {
             },
             McpServerStatus {
                 name: "disabled".to_string(),
+                plugin_id: None,
                 server_info: None,
                 tools: HashMap::new(),
                 resources: Vec::new(),

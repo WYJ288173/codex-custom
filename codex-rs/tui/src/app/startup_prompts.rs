@@ -5,6 +5,7 @@
 
 use super::*;
 use codex_config::ConfigLayerSource;
+use codex_config::types::StartupNoticeLevel;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -45,9 +46,28 @@ impl SkillLoadWarningState {
     }
 }
 
-pub(super) fn emit_skill_load_warnings(app_event_tx: &AppEventSender, errors: &[SkillErrorInfo]) {
+pub(super) fn emit_skill_load_warnings(
+    app_event_tx: &AppEventSender,
+    config: &Config,
+    errors: &[SkillErrorInfo],
+) {
     if errors.is_empty() {
         return;
+    }
+
+    match config.tui_startup_notices.skill_load_errors {
+        StartupNoticeLevel::Quiet => return,
+        StartupNoticeLevel::Summary => {
+            let noun = if errors.len() == 1 { "skill" } else { "skills" };
+            app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
+                crate::history_cell::new_warning_event(format!(
+                    "Startup diagnostics: {} {noun} skipped. Run `codex doctor` for details.",
+                    errors.len()
+                )),
+            )));
+            return;
+        }
+        StartupNoticeLevel::Verbose => {}
     }
 
     let error_count = errors.len();
@@ -69,10 +89,7 @@ pub(super) fn emit_skill_load_warnings(app_event_tx: &AppEventSender, errors: &[
 pub(super) fn emit_project_config_warnings(app_event_tx: &AppEventSender, config: &Config) {
     let mut disabled_folders = Vec::new();
 
-    for layer in config.config_layer_stack.get_layers(
-        ConfigLayerStackOrdering::LowestPrecedenceFirst,
-        /*include_disabled*/ true,
-    ) {
+    for layer in config.config_layer_stack.all_layers_low_to_high() {
         let ConfigLayerSource::Project { dot_codex_folder } = &layer.name else {
             continue;
         };
@@ -215,17 +232,18 @@ pub(super) fn select_model_availability_nux(
     available_models: &[ModelPreset],
     nux_config: &ModelAvailabilityNuxConfig,
 ) -> Option<StartupTooltipOverride> {
-    available_models.iter().find_map(|preset| {
-        let ModelAvailabilityNux { message } = preset.availability_nux.as_ref()?;
-        let shown_count = nux_config
-            .shown_count
-            .get(&preset.model)
-            .copied()
-            .unwrap_or_default();
-        (shown_count < MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT).then(|| StartupTooltipOverride {
-            model_slug: preset.model.clone(),
-            message: message.clone(),
-        })
+    let preset = available_models
+        .iter()
+        .find(|preset| preset.availability_nux.is_some())?;
+    let ModelAvailabilityNux { message } = preset.availability_nux.as_ref()?;
+    let shown_count = nux_config
+        .shown_count
+        .get(&preset.model)
+        .copied()
+        .unwrap_or_default();
+    (shown_count < MODEL_AVAILABILITY_NUX_MAX_SHOW_COUNT).then(|| StartupTooltipOverride {
+        model_slug: preset.model.clone(),
+        message: message.clone(),
     })
 }
 
@@ -414,11 +432,21 @@ mod tests {
             .collect()
     }
 
-    fn render_skill_load_warning_cells(errors: &[SkillErrorInfo]) -> String {
+    async fn render_skill_load_warning_cells(
+        errors: &[SkillErrorInfo],
+        level: StartupNoticeLevel,
+    ) -> String {
         let (tx, mut rx) = unbounded_channel();
         let app_event_tx = AppEventSender::new(tx);
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let mut config = ConfigBuilder::default()
+            .codex_home(temp_dir.path().to_path_buf())
+            .build()
+            .await
+            .expect("config should build");
+        config.tui_startup_notices.skill_load_errors = level;
 
-        emit_skill_load_warnings(&app_event_tx, errors);
+        emit_skill_load_warnings(&app_event_tx, &config, errors);
 
         let mut rendered = Vec::new();
         while let Ok(AppEvent::InsertHistoryCell(cell)) = rx.try_recv() {
@@ -429,6 +457,32 @@ mod tests {
             );
         }
         rendered.join("\n")
+    }
+
+    #[tokio::test]
+    async fn skill_load_warning_quiet_renders_nothing() {
+        let errors = vec![skill_error(
+            "/repo/.codex/skills/abc/SKILL.md",
+            "invalid description",
+        )];
+
+        assert_eq!(
+            render_skill_load_warning_cells(&errors, StartupNoticeLevel::Quiet).await,
+            ""
+        );
+    }
+
+    #[tokio::test]
+    async fn skill_load_warning_summary_renders_single_diagnostic_hint() {
+        let errors = vec![skill_error(
+            "/repo/.codex/skills/abc/SKILL.md",
+            "invalid description",
+        )];
+
+        insta::assert_snapshot!(
+            render_skill_load_warning_cells(&errors, StartupNoticeLevel::Summary).await,
+            @"⚠ Startup diagnostics: 1 skill skipped. Run `codex doctor` for details."
+        );
     }
 
     #[test]
@@ -500,16 +554,16 @@ mod tests {
         );
     }
 
-    #[test]
-    fn repeated_active_skill_load_warning_renders_once() {
+    #[tokio::test]
+    async fn repeated_active_skill_load_warning_renders_once_in_verbose_mode() {
         let mut state = SkillLoadWarningState::default();
         let error = skill_error("/repo/.codex/skills/abc/SKILL.md", "invalid description");
 
         let first_errors = state.newly_active_errors(std::slice::from_ref(&error));
         let repeated_errors = state.newly_active_errors(std::slice::from_ref(&error));
         let rendered = [
-            render_skill_load_warning_cells(&first_errors),
-            render_skill_load_warning_cells(&repeated_errors),
+            render_skill_load_warning_cells(&first_errors, StartupNoticeLevel::Verbose).await,
+            render_skill_load_warning_cells(&repeated_errors, StartupNoticeLevel::Verbose).await,
         ]
         .into_iter()
         .filter(|output| !output.is_empty())

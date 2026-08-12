@@ -1,0 +1,11 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 323
+expression: "render_bottom_popup(&chat, 80)"
+---
+  Authenticating sentry…
+  Requesting a browser sign-in link…
+
+›    Starting authentication…
+
+  Esc Close

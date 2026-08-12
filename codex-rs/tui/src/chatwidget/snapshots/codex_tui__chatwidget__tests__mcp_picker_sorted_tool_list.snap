@@ -1,0 +1,13 @@
+---
+source: tui/src/chatwidget/tests/mcp_picker.rs
+assertion_line: 293
+expression: rendered
+---
+  MCP tools · alpha-connected
+  3 tools
+
+›    alpha_tool
+     middle_tool
+     zulu_tool
+
+  Esc Back

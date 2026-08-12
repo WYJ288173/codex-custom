@@ -8,6 +8,7 @@ use crate::bottom_pane::footer::CollaborationModeIndicator;
 use crate::bottom_pane::footer::FooterMode;
 use crate::bottom_pane::footer::GoalStatusIndicator;
 use crate::key_hint::KeyBinding;
+use crate::key_hint::ShortcutHint;
 #[cfg(test)]
 use std::time::Duration;
 
@@ -22,22 +23,24 @@ pub(super) struct FooterState {
     pub(super) flash: Option<FooterFlash>,
     pub(super) context_window_percent: Option<i64>,
     pub(super) context_window_used_tokens: Option<i64>,
+    pub(super) context_window_pending: bool,
     pub(super) collaboration_mode_indicator: Option<CollaborationModeIndicator>,
     pub(super) goal_status_indicator: Option<GoalStatusIndicator>,
     pub(super) ide_context_active: bool,
     pub(super) status_line_value: Option<Line<'static>>,
+    pub(super) status_line_extra_values: Vec<Line<'static>>,
     pub(super) status_line_hyperlink_url: Option<String>,
     pub(super) status_line_enabled: bool,
     pub(super) side_conversation_context_label: Option<String>,
     pub(super) active_agent_label: Option<String>,
-    pub(super) external_editor_key: Option<KeyBinding>,
-    pub(super) show_transcript_key: Option<KeyBinding>,
-    pub(super) insert_newline_key: Option<KeyBinding>,
-    pub(super) queue_key: Option<KeyBinding>,
-    pub(super) toggle_shortcuts_key: Option<KeyBinding>,
-    pub(super) history_search_key: Option<KeyBinding>,
-    pub(super) reasoning_down_key: Option<KeyBinding>,
-    pub(super) reasoning_up_key: Option<KeyBinding>,
+    pub(super) external_editor_key: Option<ShortcutHint>,
+    pub(super) show_transcript_key: Option<ShortcutHint>,
+    pub(super) insert_newline_key: Option<ShortcutHint>,
+    pub(super) queue_key: Option<ShortcutHint>,
+    pub(super) toggle_shortcuts_key: Option<ShortcutHint>,
+    pub(super) history_search_key: Option<ShortcutHint>,
+    pub(super) reasoning_down_key: Option<ShortcutHint>,
+    pub(super) reasoning_up_key: Option<ShortcutHint>,
 }
 
 #[derive(Clone, Debug)]
@@ -69,5 +72,19 @@ impl FooterState {
                 .map(|span| span.content.as_ref())
                 .collect::<String>()
         })
+    }
+
+    #[cfg(test)]
+    pub(super) fn status_line_texts(&self) -> Vec<String> {
+        self.status_line_value
+            .iter()
+            .chain(self.status_line_extra_values.iter())
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
     }
 }

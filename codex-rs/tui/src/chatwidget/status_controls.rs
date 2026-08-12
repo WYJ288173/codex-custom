@@ -9,14 +9,15 @@ use super::*;
 impl ChatWidget {
     /// Update the status indicator header and details.
     ///
-    /// Passing `None` clears any existing details.
+    /// Passing `None` clears any existing details. Returns whether the visible status indicator
+    /// requested a redraw.
     pub(super) fn set_status(
         &mut self,
         header: String,
         details: Option<String>,
         details_capitalization: StatusDetailsCapitalization,
         details_max_lines: usize,
-    ) {
+    ) -> bool {
         let details = details
             .filter(|details| !details.is_empty())
             .map(|details| {
@@ -33,7 +34,7 @@ impl ChatWidget {
             details: details.clone(),
             details_max_lines,
         });
-        self.bottom_pane.update_status(
+        let status_indicator_updated = self.bottom_pane.update_status(
             header,
             details,
             StatusDetailsCapitalization::Preserve,
@@ -51,22 +52,29 @@ impl ChatWidget {
         if title_uses_status {
             self.refresh_status_surfaces();
         }
+        status_indicator_updated
     }
 
     /// Convenience wrapper around [`Self::set_status`];
-    /// updates the status indicator header and clears any existing details.
-    pub(super) fn set_status_header(&mut self, header: String) {
+    /// updates the status indicator header and clears any existing details, returning whether the
+    /// visible status indicator requested a redraw.
+    pub(super) fn set_status_header(&mut self, header: String) -> bool {
         self.set_status(
             header,
             /*details*/ None,
             StatusDetailsCapitalization::CapitalizeFirst,
             STATUS_DETAILS_DEFAULT_MAX_LINES,
-        );
+        )
     }
 
     /// Sets the currently rendered footer status-line value.
     pub(crate) fn set_status_line(&mut self, status_line: Option<Line<'static>>) {
         self.bottom_pane.set_status_line(status_line);
+    }
+
+    /// Sets the currently rendered multi-line footer status value.
+    pub(crate) fn set_status_lines(&mut self, status_lines: Vec<Line<'static>>) {
+        self.bottom_pane.set_status_lines(status_lines);
     }
 
     /// Sets the terminal hyperlink target for the currently rendered footer status line.
@@ -355,6 +363,9 @@ impl ChatWidget {
     }
 
     pub(super) fn status_line_context_remaining_percent(&self) -> Option<i64> {
+        if self.token_usage_pending {
+            return None;
+        }
         let Some(context_window) = self.status_line_context_window_size() else {
             return Some(100);
         };
@@ -372,8 +383,8 @@ impl ChatWidget {
     }
 
     pub(super) fn status_line_context_used_percent(&self) -> Option<i64> {
-        let remaining = self.status_line_context_remaining_percent().unwrap_or(100);
-        Some((100 - remaining).clamp(0, 100))
+        self.status_line_context_remaining_percent()
+            .map(|remaining| (100 - remaining).clamp(0, 100))
     }
 
     pub(super) fn status_line_total_usage(&self) -> TokenUsage {
@@ -390,7 +401,11 @@ impl ChatWidget {
     ) -> Option<String> {
         let window = window?;
         let remaining = (100.0f64 - window.used_percent).clamp(0.0f64, 100.0f64);
-        Some(format!("{label} {remaining:.0}% left"))
+        let value = format!("{label} {remaining:.0}% left");
+        Some(match window.resets_at.as_deref() {
+            Some(reset) => format!("{value} · resets {reset}"),
+            None => value,
+        })
     }
 
     pub(super) fn status_line_reasoning_effort_label(

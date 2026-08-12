@@ -4,14 +4,20 @@
 //! behavior easier to review without paging through the rest of `chatwidget.rs`.
 
 use super::*;
+use crate::bottom_pane::ClaudeStatusLineData;
+use crate::bottom_pane::render_claude_status_line;
 use crate::bottom_pane::status_line_from_segments;
 use crate::branch_summary;
 use crate::chatwidget::limit_label_for_window;
 use crate::chatwidget::rate_limits::get_limits_duration;
 use crate::legacy_core::config::Config;
 use crate::status::format_tokens_compact;
+use crate::status_line_account_usage::REFRESH_INTERVAL as ACCOUNT_USAGE_REFRESH_INTERVAL;
+use chrono::Duration as ChronoDuration;
+use chrono::Local;
 use codex_app_server_protocol::AskForApproval;
 use codex_config::ConfigLayerSource;
+use codex_config::types::StatusLineLayout;
 use codex_protocol::config_types::ApprovalsReviewer;
 use codex_protocol::config_types::ServiceTier;
 use codex_protocol::models::PermissionProfile;
@@ -140,7 +146,10 @@ impl ChatWidget {
     }
 
     fn sync_status_surface_shared_state(&mut self, selections: &StatusSurfaceSelections) {
-        if !selections.uses_git_branch() {
+        let claude_status_line_enabled = self.config.tui_status_line_layout
+            == StatusLineLayout::Claude
+            && !selections.status_line_items.is_empty();
+        if !selections.uses_git_branch() && !claude_status_line_enabled {
             self.status_line_branch = None;
             self.status_line_branch_pending = false;
             self.status_line_branch_lookup_complete = false;
@@ -183,23 +192,64 @@ impl ChatWidget {
             return;
         }
 
-        let mut segments = Vec::new();
-        for item in &selections.status_line_items {
-            if let Some(value) = self.status_line_value_for_item(*item) {
-                segments.push((*item, value));
+        match self.config.tui_status_line_layout {
+            StatusLineLayout::SingleLine => {
+                let mut segments = Vec::new();
+                for item in &selections.status_line_items {
+                    if let Some(value) = self.status_line_value_for_item(*item) {
+                        segments.push((*item, value));
+                    }
+                }
+                self.set_status_line(status_line_from_segments(
+                    segments,
+                    self.config.tui_status_line_use_colors,
+                ));
+            }
+            StatusLineLayout::Claude => {
+                let width = self
+                    .last_rendered_width
+                    .get()
+                    .unwrap_or(180)
+                    .saturating_sub(crate::ui_consts::FOOTER_INDENT_COLS as u16);
+                let data = self.claude_status_line_data();
+                self.set_status_lines(render_claude_status_line(&data, width));
             }
         }
-
-        self.set_status_line(status_line_from_segments(
-            segments,
-            self.config.tui_status_line_use_colors,
-        ));
-        let hyperlink_url = selections
-            .status_line_items
-            .contains(&StatusLineItem::PullRequestNumber)
-            .then(|| self.status_line_pull_request_url())
+        let hyperlink_url = (self.config.tui_status_line_layout == StatusLineLayout::SingleLine)
+            .then(|| {
+                selections
+                    .status_line_items
+                    .contains(&StatusLineItem::PullRequestNumber)
+                    .then(|| self.status_line_pull_request_url())
+                    .flatten()
+            })
             .flatten();
         self.set_status_line_hyperlink(hyperlink_url);
+    }
+
+    fn claude_status_line_data(&self) -> ClaudeStatusLineData {
+        let usage = self.status_line_total_usage();
+        let rate_limits = self.rate_limit_snapshots_by_limit_id.get("codex");
+        let now = Local::now();
+        let five_hour_limit = rate_limits.and_then(|snapshot| {
+            five_hour_status_window(snapshot)
+                .map(|(window, _)| format_five_hour_limit(snapshot, window, now))
+        });
+        let weekly_limit = rate_limits
+            .and_then(weekly_status_window)
+            .map(|(window, _)| format!("Limit/week {:.0}%", window.used_percent.clamp(0.0, 100.0)));
+        ClaudeStatusLineData {
+            model: self.model_display_name().to_string(),
+            reasoning: Some(self.reasoning_display_name()),
+            current_dir: format_directory_display(self.status_line_cwd(), /*max_width*/ None),
+            git_branch: self.status_line_branch.clone(),
+            context_used_percent: self.status_line_context_used_percent(),
+            session_input_tokens: usage.input_tokens,
+            session_output_tokens: usage.output_tokens,
+            account_usage: self.status_line_account_usage.summary().cloned(),
+            five_hour_limit,
+            weekly_limit,
+        }
     }
 
     /// Clears the terminal title Codex most recently wrote, if any.
@@ -279,6 +329,7 @@ impl ChatWidget {
         self.warn_invalid_status_line_items_once(&selections.invalid_status_line_items);
         self.warn_invalid_terminal_title_items_once(&selections.invalid_terminal_title_items);
         self.sync_status_surface_shared_state(&selections);
+        self.request_status_line_account_usage_if_due(Instant::now(), &selections);
         self.refresh_status_line_from_selections(&selections);
         self.refresh_terminal_title_from_selections(&selections);
     }
@@ -448,11 +499,7 @@ impl ChatWidget {
 
         self.config
             .config_layer_stack
-            .get_layers(
-                ConfigLayerStackOrdering::LowestPrecedenceFirst,
-                /*include_disabled*/ true,
-            )
-            .iter()
+            .all_layers_low_to_high()
             .find_map(|layer| match &layer.name {
                 ConfigLayerSource::Project { dot_codex_folder } => {
                     dot_codex_folder.as_path().parent().map(Path::to_path_buf)
@@ -611,6 +658,48 @@ impl ChatWidget {
         }
     }
 
+    fn request_status_line_account_usage_if_due(
+        &mut self,
+        now: Instant,
+        selections: &StatusSurfaceSelections,
+    ) {
+        if self.config.tui_status_line_layout != StatusLineLayout::Claude
+            || selections.status_line_items.is_empty()
+            || !self.has_codex_backend_auth
+        {
+            return;
+        }
+        if let Some(request_id) = self.status_line_account_usage.request_if_due(now) {
+            self.app_event_tx
+                .send(AppEvent::RefreshStatusLineAccountUsage { request_id });
+            self.frame_requester
+                .schedule_frame_in(ACCOUNT_USAGE_REFRESH_INTERVAL);
+        }
+    }
+
+    pub(super) fn refresh_status_line_if_account_usage_due(&mut self) {
+        if self.config.tui_status_line_layout != StatusLineLayout::Claude {
+            return;
+        }
+        let selections = self.status_surface_selections();
+        self.request_status_line_account_usage_if_due(Instant::now(), &selections);
+    }
+
+    pub(crate) fn finish_status_line_account_usage_refresh(
+        &mut self,
+        request_id: u64,
+        result: Result<crate::status_line_account_usage::AccountUsageSummary, String>,
+    ) -> bool {
+        let completed = self.status_line_account_usage.complete(request_id, result);
+        if completed {
+            self.frame_requester
+                .schedule_frame_in(ACCOUNT_USAGE_REFRESH_INTERVAL);
+            self.refresh_status_line();
+            self.request_redraw();
+        }
+        completed
+    }
+
     pub(crate) fn set_status_line_workspace_headline(
         &mut self,
         request_id: u64,
@@ -700,11 +789,12 @@ impl ChatWidget {
                 .status_line_context_used_percent()
                 .map(|used| format!("Context {used}% used")),
             StatusLineItem::FiveHourLimit => {
-                let (window, is_secondary) = self
-                    .rate_limit_snapshots_by_limit_id
-                    .get("codex")
-                    .and_then(five_hour_status_window)?;
+                let snapshot = self.rate_limit_snapshots_by_limit_id.get("codex")?;
+                let (window, is_secondary) = five_hour_status_window(snapshot)?;
                 let label = limit_label_for_window(window.window_minutes, is_secondary);
+                if rate_limit_window_expired(snapshot, window, Local::now()) {
+                    return Some(format!("{label} 100% left"));
+                }
                 self.status_line_limit_display(Some(window), &label)
             }
             StatusLineItem::WeeklyLimit => {
@@ -719,14 +809,18 @@ impl ChatWidget {
             StatusLineItem::ContextWindowSize => self
                 .status_line_context_window_size()
                 .map(|cws| format!("{} window", format_tokens_compact(cws))),
-            StatusLineItem::TotalInputTokens => Some(format!(
-                "{} in",
-                format_tokens_compact(self.status_line_total_usage().input_tokens)
-            )),
-            StatusLineItem::TotalOutputTokens => Some(format!(
-                "{} out",
-                format_tokens_compact(self.status_line_total_usage().output_tokens)
-            )),
+            StatusLineItem::TotalInputTokens => (!self.token_usage_pending).then(|| {
+                format!(
+                    "{} in",
+                    format_tokens_compact(self.status_line_total_usage().input_tokens)
+                )
+            }),
+            StatusLineItem::TotalOutputTokens => (!self.token_usage_pending).then(|| {
+                format!(
+                    "{} out",
+                    format_tokens_compact(self.status_line_total_usage().output_tokens)
+                )
+            }),
             StatusLineItem::SessionId => self.thread_id.map(|id| id.to_string()),
             StatusLineItem::FastMode => Some(
                 if self.current_service_tier() == Some(ServiceTier::Fast.request_value()) {
@@ -1005,6 +1099,33 @@ fn five_hour_status_window(
         .or_else(|| non_weekly_secondary_window_when_primary_is_weekly(snapshot))
 }
 
+fn rate_limit_window_expired(
+    snapshot: &RateLimitSnapshotDisplay,
+    window: &RateLimitWindowDisplay,
+    now: chrono::DateTime<Local>,
+) -> bool {
+    let Some(window_minutes) = window.window_minutes else {
+        return false;
+    };
+    now.signed_duration_since(snapshot.captured_at) >= ChronoDuration::minutes(window_minutes)
+}
+
+fn format_five_hour_limit(
+    snapshot: &RateLimitSnapshotDisplay,
+    window: &RateLimitWindowDisplay,
+    now: chrono::DateTime<Local>,
+) -> String {
+    if rate_limit_window_expired(snapshot, window, now) {
+        return "5h 0%".to_string();
+    }
+
+    let value = format!("5h {:.0}%", window.used_percent.clamp(0.0, 100.0));
+    match window.resets_at.as_deref() {
+        Some(reset) => format!("{value} reset {reset}"),
+        None => value,
+    }
+}
+
 fn weekly_status_window(
     snapshot: &RateLimitSnapshotDisplay,
 ) -> Option<(&RateLimitWindowDisplay, bool)> {
@@ -1081,6 +1202,56 @@ fn non_weekly_secondary_window_when_primary_is_weekly(
         None
     } else {
         Some((secondary, true))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(
+        captured_at: chrono::DateTime<Local>,
+        window: RateLimitWindowDisplay,
+    ) -> RateLimitSnapshotDisplay {
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            captured_at,
+            primary: Some(window),
+            secondary: None,
+            credits: None,
+            individual_limit: None,
+        }
+    }
+
+    #[test]
+    fn five_hour_claude_status_includes_reset_time() {
+        let now = Local::now();
+        let window = RateLimitWindowDisplay {
+            used_percent: 18.0,
+            resets_at: Some("03:25".to_string()),
+            window_minutes: Some(300),
+        };
+        let snapshot = snapshot(now, window);
+        let (window, _) = five_hour_status_window(&snapshot).expect("5h window");
+
+        assert_eq!(
+            format_five_hour_limit(&snapshot, window, now),
+            "5h 18% reset 03:25"
+        );
+    }
+
+    #[test]
+    fn expired_five_hour_claude_status_resets_to_zero_used() {
+        let now = Local::now();
+        let window = RateLimitWindowDisplay {
+            used_percent: 87.0,
+            resets_at: Some("03:25".to_string()),
+            window_minutes: Some(300),
+        };
+        let snapshot = snapshot(now - ChronoDuration::minutes(301), window);
+        let (window, _) = five_hour_status_window(&snapshot).expect("5h window");
+
+        assert_eq!(format_five_hour_limit(&snapshot, window, now), "5h 0%");
     }
 }
 
