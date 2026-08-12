@@ -210,8 +210,7 @@ impl ChatWidget {
                     .last_rendered_width
                     .get()
                     .unwrap_or(180)
-                    .saturating_sub(crate::ui_consts::FOOTER_INDENT_COLS)
-                    .min(usize::from(u16::MAX)) as u16;
+                    .saturating_sub(crate::ui_consts::FOOTER_INDENT_COLS as u16);
                 let data = self.claude_status_line_data();
                 self.set_status_lines(render_claude_status_line(&data, width));
             }

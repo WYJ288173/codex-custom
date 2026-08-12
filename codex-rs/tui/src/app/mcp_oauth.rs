@@ -350,6 +350,7 @@ fn mcp_oauth_login_request(
             name: server.name.clone(),
             thread_id: origin_thread_id.map(|thread_id| thread_id.to_string()),
             scopes: None,
+            client_registration: None,
             timeout_secs: None,
         },
     }
