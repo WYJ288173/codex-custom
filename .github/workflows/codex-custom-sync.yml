@@ -136,6 +136,7 @@ jobs:
           just test -p codex-tui -p codex-cli -p codex-mcp -p codex-config
           just test -p codex-core -E 'test(startup_customization) | test(status_line_layout)'
           just fix -p codex-tui -p codex-cli -p codex-mcp -p codex-config
+          git diff --exit-code -- '*.rs'
 
       - name: Build release binary
         working-directory: codex-rs
@@ -173,6 +174,19 @@ jobs:
           path: |
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.checksum }}
+
+      - name: Collect validation changes
+        if: always()
+        run: git diff -- '*.rs' > validation.patch
+
+      - name: Upload validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: validation-diagnostics
+          path: |
+            validation.patch
+            codex-rs/**/*.snap.new
 
       - name: Upload generated schema
         if: always()
