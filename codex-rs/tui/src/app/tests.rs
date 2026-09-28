@@ -5372,6 +5372,10 @@ async fn app_scoped_mcp_startup_notifications_do_not_render_in_active_thread() {
 #[tokio::test]
 async fn active_side_thread_renders_live_mcp_startup_notifications() {
     let (mut app, mut app_event_rx, _op_rx) = make_test_app_with_channels().await;
+    app.config.tui_startup_notices.mcp_startup_errors =
+        codex_config::types::StartupNoticeLevel::Verbose;
+    app.local_settings.tui.startup_notices.mcp_startup_errors =
+        codex_config::types::StartupNoticeLevel::Verbose;
     while app_event_rx.try_recv().is_ok() {}
     let sentry_config = toml::from_str::<toml::Value>("command = 'true'")
         .expect("test MCP config should parse")

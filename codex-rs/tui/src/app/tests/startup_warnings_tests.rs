@@ -185,6 +185,13 @@ async fn startup_warnings_preserve_stream_repair_and_backtrack_selection() -> Re
 #[tokio::test]
 async fn mcp_startup_summary_counts_servers_and_sign_in_subset() -> Result<()> {
     let (mut app, mut events, _op_rx) = make_test_app_with_channels().await;
+    app.local_settings.tui.startup_notices.mcp_startup_errors =
+        codex_config::types::StartupNoticeLevel::Verbose;
+    app.chat_widget
+        .local_settings
+        .tui
+        .startup_notices
+        .mcp_startup_errors = codex_config::types::StartupNoticeLevel::Verbose;
     let mut tui = crate::tui::test_support::make_test_tui()?;
     app.chat_widget
         .set_mcp_startup_expected_servers(["alpha", "beta", "gamma"].map(str::to_owned));
@@ -259,6 +266,13 @@ async fn startup_warnings_wait_for_splash_and_coalesce_with_full_details() -> Re
 async fn startup_skill_load_order_preserves_runtime_error_recurrence() -> Result<()> {
     for background_first in [false, true] {
         let (mut app, mut events, _op_rx) = make_test_app_with_channels().await;
+        app.local_settings.tui.startup_notices.skill_load_errors =
+            codex_config::types::StartupNoticeLevel::Verbose;
+        app.chat_widget
+            .local_settings
+            .tui
+            .startup_notices
+            .skill_load_errors = codex_config::types::StartupNoticeLevel::Verbose;
         let mut tui = crate::tui::test_support::make_test_tui()?;
         let mut server = start_config_write_test_app_server(&app).await?;
         let cwd = app.config.cwd.to_path_buf();

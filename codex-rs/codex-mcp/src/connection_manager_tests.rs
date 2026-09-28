@@ -6609,12 +6609,13 @@ async fn view_only_changes_reuse_connection_and_preserve_the_old_step() {
 async fn lazy_cached_policy_defers_optional_remote_streamable_http_with_cached_tools() {
     let runtime_context = reusable_server_runtime_context();
     let config = reusable_server_config("http://127.0.0.1:1");
-    let previous = manager_with_reusable_ready_server(
+    let mut previous = manager_with_reusable_ready_server(
         &config,
         &runtime_context,
         vec![create_test_tool("docs", "search")],
     )
     .await;
+    previous.servers.clear();
     let tool_catalog_cache = McpToolCatalogCache::default();
     let environment = runtime_context
         .resolve_server_environment("docs", &config)
@@ -6661,12 +6662,13 @@ async fn lazy_cached_policy_keeps_required_remote_streamable_http_eager() {
     let runtime_context = reusable_server_runtime_context();
     let mut config = reusable_server_config("http://127.0.0.1:1");
     config.required = true;
-    let previous = manager_with_reusable_ready_server(
+    let mut previous = manager_with_reusable_ready_server(
         &config,
         &runtime_context,
         vec![create_test_tool("docs", "search")],
     )
     .await;
+    previous.servers.clear();
     let tool_catalog_cache = McpToolCatalogCache::default();
     let environment = runtime_context
         .resolve_server_environment("docs", &config)
@@ -6719,12 +6721,13 @@ async fn lazy_cached_policy_keeps_stdio_servers_eager_even_with_cached_tools() {
         env_vars: Vec::new(),
         cwd: None,
     };
-    let previous = manager_with_reusable_ready_server(
+    let mut previous = manager_with_reusable_ready_server(
         &config,
         &runtime_context,
         vec![create_test_tool("docs", "search")],
     )
     .await;
+    previous.servers.clear();
     let tool_catalog_cache = McpToolCatalogCache::default();
     let cache_context = tool_catalog_cache
         .context(

@@ -6,6 +6,7 @@ expression: rendered
   Authenticating sentry…
   Failed to open browser: simulated opener failure
 
+
 › 1. Open browser again
   2. Close
 

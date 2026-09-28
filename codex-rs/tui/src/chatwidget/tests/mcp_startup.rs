@@ -231,6 +231,7 @@ async fn mcp_startup_warning_identity_survives_resume_and_task_switch() {
         (ThreadSnapshot, Completed),
     ] {
         let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(/*model_override*/ None).await;
+        set_mcp_startup_notice_level(&mut chat, StartupNoticeLevel::Verbose);
         chat.replay_thread_turns(
             vec![app_server_turn(
                 "previous-turn",

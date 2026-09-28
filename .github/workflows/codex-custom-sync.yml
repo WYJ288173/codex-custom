@@ -118,6 +118,7 @@ jobs:
         with:
           workspaces: codex-rs
           cache-on-failure: true
+          cache-workspace-crates: true
 
       - name: Install validation tools
         run: |
@@ -130,11 +131,20 @@ jobs:
         working-directory: codex-rs
         env:
           RUST_MIN_STACK: "8388608"
+          INSTA_UPDATE: new
         run: |
           set -euo pipefail
           cargo fmt -- --config imports_granularity=Item --check
           just test -p codex-tui -p codex-cli -p codex-mcp -p codex-config
-          just test -p codex-core -E 'test(startup_customization) | test(status_line_layout)'
+
+      - name: Validate custom core configuration
+        working-directory: codex-rs
+        run: just test -p codex-core --lib -E 'test(startup_customization) | test(status_line_layout)'
+
+      - name: Check custom crate lints
+        working-directory: codex-rs
+        run: |
+          set -euo pipefail
           just fix -p codex-tui -p codex-cli -p codex-mcp -p codex-config
           git diff --exit-code -- '*.rs'
 

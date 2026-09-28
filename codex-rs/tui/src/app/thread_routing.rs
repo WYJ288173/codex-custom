@@ -1972,9 +1972,6 @@ impl App {
             &errors,
             self.local_settings.tui.startup_notices.skill_load_errors,
         );
-        if warnings.is_empty() {
-            return;
-        }
         if self.skill_load_warnings.startup_complete
             || self.local_settings.tui.startup_notices.skill_load_errors
                 == codex_config::types::StartupNoticeLevel::Summary
@@ -1982,7 +1979,7 @@ impl App {
             for warning in warnings {
                 self.chat_widget.add_warning_message(warning);
             }
-        } else {
+        } else if !warnings.is_empty() {
             self.app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
                 // The per-file diagnostics already identify every affected skill.
                 history_cell::StartupWarningsCell::new(
