@@ -5464,12 +5464,12 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
     assert_eq!(history_cell::warning_count(&app.transcript_cells), 1);
     let rendered = rendered_cells.join("\n");
     assert!(app.chat_widget.side_conversation_active());
-    assert_eq!(rendered.matches("sentry is not logged in").count(), 0);
+    assert_eq!(rendered.matches("sentry is not logged in").count(), 1);
     assert_eq!(
         rendered
             .matches("MCP startup incomplete (failed: sentry)")
             .count(),
-        0
+        1
     );
 }
 
