@@ -24,12 +24,14 @@ use crate::history_cell::ReasoningSummaryCell;
 use crate::history_cell::SessionInfoCell;
 use crate::history_cell::UserHistoryCell;
 use crate::history_cell::raw_lines_from_source;
+use crate::legacy_core::config::Config;
 use crate::thread_transcript::RawReasoningVisibility;
 use crate::thread_transcript::thread_items_to_transcript_cells;
 
 impl App {
     pub(super) async fn export_transcript(
         &mut self,
+        tui: &mut crate::tui::Tui,
         app_server: &mut AppServerSession,
         destination: TranscriptExportDestination,
     ) -> Result<(), String> {
@@ -42,19 +44,22 @@ impl App {
         } else {
             RawReasoningVisibility::Hidden
         };
-        let codex_home = self.config.codex_home.to_path_buf();
         let cells = load_export_transcript(
             app_server,
             thread_id,
             visibility,
-            Some(codex_home.as_path()),
+            Some(&self.config),
             self.transcript_cells.clone(),
         )
         .await?;
         let markdown = render_markdown_transcript(&cells)?;
         match destination {
             TranscriptExportDestination::Clipboard => {
-                self.chat_widget.copy_transcript_to_clipboard(&markdown);
+                let result = tui.copy_transcript_selection(
+                    &markdown,
+                    crate::clipboard_copy::CopyFormat::PlainText,
+                );
+                self.chat_widget.show_copy_result("conversation", result);
             }
             TranscriptExportDestination::File(path) => {
                 let cwd = if self.app_server_target.uses_remote_workspace() {
@@ -77,7 +82,7 @@ pub(super) async fn load_export_transcript(
     app_server: &mut AppServerSession,
     thread_id: ThreadId,
     visibility: RawReasoningVisibility,
-    codex_home: Option<&Path>,
+    config: Option<&Config>,
     visible_transcript: Vec<Arc<dyn HistoryCell>>,
 ) -> Result<Vec<Arc<dyn HistoryCell>>, String> {
     let mut thread = app_server
@@ -93,6 +98,7 @@ pub(super) async fn load_export_transcript(
             /*turn_cursor*/ None,
             /*item_cursor*/ None,
             /*config*/ None,
+            /*local_settings*/ None,
             HistoryHydrationScope::Complete,
         )
         .await
@@ -123,7 +129,7 @@ pub(super) async fn load_export_transcript(
                 &thread.cwd,
                 [item],
                 visibility,
-                codex_home,
+                config,
             ));
         }
     }
@@ -161,7 +167,7 @@ fn export_activity_cell(item: &ThreadItem) -> Option<PlainHistoryCell> {
                             lines.extend(raw_lines_from_source(&text.text));
                         }
                         Ok(rmcp::model::ContentBlock::Image(_)) => {
-                            lines.push("<image content>".into());
+                            lines.push("Returned image".into());
                         }
                         Ok(rmcp::model::ContentBlock::Audio(_)) => {
                             lines.push("<audio content>".into());
@@ -224,7 +230,7 @@ fn render_markdown_transcript(cells: &[Arc<dyn HistoryCell>]) -> Result<String, 
         let lines = if let Some(user) = cell.as_any().downcast_ref::<UserHistoryCell>() {
             let (message, _) =
                 crate::ide_context::extract_prompt_request_with_offset(&user.message);
-            let message = crate::history_cell::sanitize_user_text(message);
+            let message = crate::history_cell::sanitize_user_text(message.into());
             let mut lines = raw_lines_from_source(&message);
             let image_count = user.local_image_paths.len() + user.remote_image_urls.len();
             let image_labels = (0..image_count)
@@ -236,6 +242,8 @@ fn render_markdown_transcript(cells: &[Arc<dyn HistoryCell>]) -> Result<String, 
             }
             lines.extend(image_labels.into_iter().map(Into::into));
             lines
+        } else if let Some(reasoning) = cell.as_any().downcast_ref::<ReasoningSummaryCell>() {
+            raw_lines_from_source(reasoning.markdown_source().trim())
         } else {
             cell.raw_lines()
         };
@@ -247,6 +255,7 @@ fn render_markdown_transcript(cells: &[Arc<dyn HistoryCell>]) -> Result<String, 
                     [
                         "• Saved conversation to ",
                         "• Copied conversation to clipboard",
+                        "• Copy unconfirmed; /export saves chat",
                         "■ Export failed: ",
                         "■ Copy failed: ",
                     ]
@@ -273,9 +282,7 @@ fn render_markdown_transcript(cells: &[Arc<dyn HistoryCell>]) -> Result<String, 
                 markdown.push_str("    ");
             }
             for span in line.spans {
-                markdown.push_str(&crate::history_cell::sanitize_user_text(
-                    span.content.as_ref(),
-                ));
+                markdown.push_str(&crate::history_cell::sanitize_user_text(span.content));
             }
             markdown.push('\n');
         }

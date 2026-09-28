@@ -23,7 +23,10 @@ concurrency:
 
 env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-  CUSTOM_BRANCH: feature/claude-style-statusline
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_PROFILE_TEST_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+  CUSTOM_BRANCH: ${{ github.ref_name }}
   UPSTREAM_REPO: https://github.com/openai/codex.git
   TARGET: aarch64-apple-darwin
 
@@ -35,7 +38,7 @@ jobs:
     # used by upstream releases. This job also validates both custom crates
     # before compiling the release profile, so allow enough time for a cold
     # standard-runner build.
-    timeout-minutes: 180
+    timeout-minutes: 360
     defaults:
       run:
         shell: bash
@@ -46,23 +49,21 @@ jobs:
           fetch-depth: 0
           persist-credentials: true
 
-      - name: Rebase custom branch onto upstream/main
+      - name: Resolve and merge latest stable upstream release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          upstream_tag="$(gh api repos/openai/codex/releases/latest --jq .tag_name)"
+          [[ "$upstream_tag" =~ ^rust-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          echo "tag=$upstream_tag" >> "$GITHUB_OUTPUT"
           git remote add upstream "$UPSTREAM_REPO"
-          git fetch upstream main
-          git rebase upstream/main
-
-      - name: Keep custom workflow definitions
-        run: |
-          set -euo pipefail
-          git checkout "origin/${CUSTOM_BRANCH}" -- .github/workflows
-          if ! git diff --quiet -- .github/workflows; then
-            git add .github/workflows
-            git commit -m "chore: keep custom workflow definitions"
-          fi
+          git fetch upstream "tag" "$upstream_tag"
+          git merge --no-edit "$upstream_tag"
+          git merge-base --is-ancestor "$upstream_tag" HEAD
 
       - name: Verify custom sync contract
         run: python3 -m unittest scripts/test_codex_custom_sync.py
@@ -78,7 +79,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          upstream_tag="$(gh api repos/openai/codex/releases/latest --jq .tag_name)"
+          upstream_tag="${{ steps.upstream.outputs.tag }}"
           if [[ ! "$upstream_tag" =~ ^rust-v([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
             echo "Unsupported upstream Codex release tag: ${upstream_tag}" >&2
             exit 1
@@ -113,6 +114,18 @@ jobs:
         working-directory: codex-rs
         run: cargo update --workspace
 
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: codex-rs
+          cache-on-failure: true
+
+      - name: Install validation tools
+        run: |
+          brew install just cargo-nextest
+
+      - name: Regenerate configuration schema
+        run: just write-config-schema
+
       - name: Validate focused custom surface
         working-directory: codex-rs
         env:
@@ -120,8 +133,9 @@ jobs:
         run: |
           set -euo pipefail
           cargo fmt -- --config imports_granularity=Item --check
-          cargo test -p codex-tui
-          cargo test -p codex-cli
+          just test -p codex-tui -p codex-cli -p codex-mcp -p codex-config
+          just test -p codex-core -E 'test(startup_customization) | test(status_line_layout)'
+          just fix -p codex-tui -p codex-cli -p codex-mcp -p codex-config
 
       - name: Build release binary
         working-directory: codex-rs
@@ -160,11 +174,18 @@ jobs:
             ${{ steps.package.outputs.archive }}
             ${{ steps.package.outputs.checksum }}
 
-      - name: Push rebased custom branch
+      - name: Upload generated schema
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f
+        with:
+          name: generated-config-schema
+          path: codex-rs/core/config.schema.json
+
+      - name: Push validated custom branch
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' }}
         run: |
           set -euo pipefail
-          git push --force-with-lease origin "HEAD:${CUSTOM_BRANCH}"
+          git push origin "HEAD:${CUSTOM_BRANCH}"
 
       - name: Create GitHub release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_release == 'true' }}
@@ -181,5 +202,5 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             --target "$CUSTOM_BRANCH" \
             --title "$RELEASE_NAME" \
-            --notes "Codex custom build based on ${{ steps.custom_version.outputs.upstream_tag }} and rebased onto upstream/main at $(git rev-parse --short=12 upstream/main)." \
+            --notes "Codex custom build based on ${{ steps.custom_version.outputs.upstream_tag }} at $(git rev-parse --short=12 HEAD)." \
             --prerelease

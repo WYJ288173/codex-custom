@@ -4,6 +4,7 @@ use anyhow::Result;
 use codex_config::types::McpServerConfig;
 use codex_config::types::McpServerTransportConfig;
 use codex_core::StartThreadOptions;
+use codex_core::TurnInputRequest;
 use codex_core::config::Config;
 use codex_extension_api::ExtensionData;
 use codex_extension_api::ExtensionRegistryBuilder;
@@ -35,6 +36,7 @@ use codex_tools::ToolName;
 use codex_tools::ToolOutput;
 use codex_tools::ToolPayload;
 use codex_tools::ToolSpec;
+use codex_utils_path_uri::LegacyAppPathString;
 use core_test_support::apps_test_server::AppsTestServer;
 use core_test_support::apps_test_server::AppsTestToolLoading;
 use core_test_support::apps_test_server::CALENDAR_CREATE_EVENT_MCP_APP_RESOURCE_URI;
@@ -598,16 +600,10 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
     let mut builder = configured_builder(apps_server.chatgpt_base_url.clone());
     let test = builder.build_with_auto_env(&server).await?;
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "Find the calendar create tool".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Find the calendar create tool".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     let EventMsg::McpToolCallBegin(begin) = wait_for_event(&test.codex, |event| {
@@ -706,7 +702,7 @@ async fn tool_search_returns_deferred_tools_without_follow_up_tool_injection() -
         apps_tool_call
             .pointer("/params/_meta/x-codex-turn-metadata/model")
             .and_then(Value::as_str),
-        Some("gpt-5.4")
+        Some("gpt-5.5")
     );
     let first_request_reasoning_effort = first_request_body
         .pointer("/reasoning/effort")
@@ -946,12 +942,12 @@ impl ToolContributor for DeferredCustomTool {
         &self,
         _session_store: &ExtensionData,
         _thread_store: &ExtensionData,
-    ) -> Vec<Arc<dyn ToolExecutor<ToolCall>>> {
+    ) -> Vec<Arc<dyn for<'call> ToolExecutor<ToolCall<'call>>>> {
         vec![Arc::new(Self)]
     }
 }
 
-impl ToolExecutor<ToolCall> for DeferredCustomTool {
+impl<'call> ToolExecutor<ToolCall<'call>> for DeferredCustomTool {
     fn tool_name(&self) -> ToolName {
         ToolName::plain("custom_echo")
     }
@@ -973,7 +969,10 @@ impl ToolExecutor<ToolCall> for DeferredCustomTool {
         ToolExposure::Deferred
     }
 
-    fn handle(&self, call: ToolCall) -> ToolExecutorFuture<'_> {
+    fn handle<'a>(&'a self, call: ToolCall<'call>) -> ToolExecutorFuture<'a>
+    where
+        'call: 'a,
+    {
         Box::pin(async move {
             let ToolPayload::Custom { input } = call.payload else {
                 return Err(FunctionCallError::Fatal(
@@ -1157,16 +1156,10 @@ async fn tool_search_returns_deferred_dynamic_tool_and_routes_follow_up_call() -
     test.session_configured = new_thread.session_configured;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "Use the automation tool".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Use the automation tool".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     let EventMsg::DynamicToolCallRequest(request) = wait_for_event(&test.codex, |event| {
@@ -1328,11 +1321,12 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                         args: Vec::new(),
                         env: None,
                         env_vars: Vec::new(),
-                        cwd: None,
+                        cwd: Some(LegacyAppPathString::from_path(config.cwd.as_path())),
                     },
                     environment_id,
                     enabled: true,
                     required: false,
+                    startup_readiness: Default::default(),
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
@@ -1343,6 +1337,7 @@ async fn tool_search_indexes_only_enabled_non_app_mcp_tools() -> Result<()> {
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    tool_input_schema_max_bytes: None,
                     omit_tools_from: None,
                     tools: HashMap::new(),
                 },
@@ -1461,11 +1456,12 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                         args: Vec::new(),
                         env: None,
                         env_vars: Vec::new(),
-                        cwd: None,
+                        cwd: Some(LegacyAppPathString::from_path(config.cwd.as_path())),
                     },
                     environment_id,
                     enabled: true,
                     required: false,
+                    startup_readiness: Default::default(),
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
@@ -1476,6 +1472,7 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    tool_input_schema_max_bytes: None,
                     omit_tools_from: None,
                     tools: HashMap::new(),
                 },
@@ -1489,16 +1486,10 @@ async fn tool_search_surfaced_mcp_tool_errors_are_returned_to_model() -> Result<
     wait_for_mcp_server(&test.codex, "rmcp").await?;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "Find the rmcp echo tool and call it.".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Find the rmcp echo tool and call it.".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     let EventMsg::McpToolCallEnd(end) = wait_for_event(&test.codex, |event| {
@@ -1616,11 +1607,12 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                         args: Vec::new(),
                         env: None,
                         env_vars: Vec::new(),
-                        cwd: None,
+                        cwd: Some(LegacyAppPathString::from_path(config.cwd.as_path())),
                     },
                     environment_id,
                     enabled: true,
                     required: false,
+                    startup_readiness: Default::default(),
                     disabled_reason: None,
                     startup_timeout_sec: Some(Duration::from_secs(10)),
                     tool_timeout_sec: None,
@@ -1631,6 +1623,7 @@ async fn tool_search_uses_non_app_mcp_server_instructions_as_namespace_descripti
                     oauth: None,
                     oauth_resource: None,
                     supports_parallel_tool_calls: false,
+                    tool_input_schema_max_bytes: None,
                     omit_tools_from: None,
                     tools: HashMap::new(),
                 },
@@ -1822,16 +1815,10 @@ async fn tool_search_matches_dynamic_tools_by_name_description_namespace_and_sch
     test.session_configured = new_thread.session_configured;
 
     test.codex
-        .submit(Op::UserInput {
-            items: vec![UserInput::Text {
-                text: "Search for the dynamic tool".to_string(),
-                text_elements: Vec::new(),
-            }],
-            final_output_json_schema: None,
-            responsesapi_client_metadata: None,
-            additional_context: Default::default(),
-            thread_settings: Default::default(),
-        })
+        .start_or_steer_turn(TurnInputRequest::user_input(vec![UserInput::Text {
+            text: "Search for the dynamic tool".to_string(),
+            text_elements: Vec::new(),
+        }]))
         .await?;
 
     wait_for_event(&test.codex, |event| {

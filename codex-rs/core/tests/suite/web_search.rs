@@ -4,8 +4,9 @@ use codex_config::test_support::CloudConfigBundleFixture;
 use codex_features::Feature;
 use codex_login::CodexAuth;
 use codex_login::auth::BedrockApiKeyAuth;
-use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_4_MODEL_ID;
+use codex_model_provider_info::AMAZON_BEDROCK_GPT_5_5_MODEL_ID;
 use codex_model_provider_info::AMAZON_BEDROCK_PROVIDER_ID;
+use codex_model_provider_info::AMAZON_BEDROCK_RUNTIME_PROVIDER_ID;
 use codex_model_provider_info::ModelProviderInfo;
 use codex_protocol::config_types::WebSearchMode;
 use codex_protocol::models::PermissionProfile;
@@ -105,8 +106,8 @@ async fn amazon_bedrock_web_search_uses_text_only_hosted_tools() {
         });
         let mut builder = test_codex().with_auth(auth);
         builder = match model_catalog {
-            ModelCatalog::BuiltIn => builder.with_model(AMAZON_BEDROCK_GPT_5_4_MODEL_ID),
-            ModelCatalog::Configured => builder.with_model_info_override("gpt-5.4", |model_info| {
+            ModelCatalog::BuiltIn => builder.with_model(AMAZON_BEDROCK_GPT_5_5_MODEL_ID),
+            ModelCatalog::Configured => builder.with_model_info_override("gpt-5.5", |model_info| {
                 model_info.web_search_tool_type = WebSearchToolType::TextAndImage;
             }),
         };
@@ -148,6 +149,66 @@ async fn amazon_bedrock_web_search_uses_text_only_hosted_tools() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn amazon_bedrock_runtime_preserves_cross_region_models_without_web_search() {
+    skip_if_no_network!();
+
+    for model in ["us.openai.gpt-5.6-sol", "global.openai.gpt-5.6-sol"] {
+        let server = start_mock_server().await;
+        let response = responses::mount_sse_once(
+            &server,
+            responses::sse(vec![
+                responses::ev_response_created("resp-1"),
+                responses::ev_completed("resp-1"),
+            ]),
+        )
+        .await;
+        let auth = CodexAuth::BedrockApiKey(BedrockApiKeyAuth {
+            api_key: "dummy".to_string(),
+            region: "us-east-1".to_string(),
+        });
+        let mut builder = test_codex()
+            .with_auth(auth)
+            .with_model(model)
+            .with_config(|config| {
+                let base_url = config.model_provider.base_url.clone();
+                config.model_provider_id = AMAZON_BEDROCK_RUNTIME_PROVIDER_ID.to_string();
+                config.model_provider =
+                    ModelProviderInfo::create_amazon_bedrock_runtime_provider(/*aws*/ None);
+                config.model_provider.base_url = base_url;
+                config
+                    .web_search_mode
+                    .set(WebSearchMode::Cached)
+                    .expect("test web search mode should satisfy constraints");
+            });
+        let test = builder
+            .build_with_auto_env(&server)
+            .await
+            .expect("create test Bedrock Runtime conversation");
+
+        test.submit_turn_with_permission_profile(
+            "hello Bedrock Runtime",
+            PermissionProfile::Disabled,
+        )
+        .await
+        .expect("submit Bedrock Runtime turn");
+
+        let body = response.single_request().body_json();
+        let web_search_tool = body
+            .get("tools")
+            .and_then(Value::as_array)
+            .and_then(|tools| {
+                tools
+                    .iter()
+                    .find(|tool| tool.get("type").and_then(Value::as_str) == Some("web_search"))
+            });
+        assert_eq!(
+            (body["model"].as_str(), web_search_tool),
+            (Some(model), None)
+        );
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn amazon_bedrock_web_search_is_disabled_when_managed_requirements_prohibit_cached_search() {
     skip_if_no_network!();
 
@@ -171,7 +232,7 @@ async fn amazon_bedrock_web_search_is_disabled_when_managed_requirements_prohibi
         });
         let mut builder = test_codex()
             .with_auth(auth)
-            .with_model(AMAZON_BEDROCK_GPT_5_4_MODEL_ID)
+            .with_model(AMAZON_BEDROCK_GPT_5_5_MODEL_ID)
             .with_cloud_config_bundle(
                 CloudConfigBundleFixture::loader_with_enterprise_requirement(format!(
                     r#"allowed_web_search_modes = ["{allowed_mode}"]"#

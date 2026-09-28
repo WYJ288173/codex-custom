@@ -3,9 +3,12 @@
 //! The app server reports MCP server startup as per-server status updates. This
 //! module keeps the TUI's buffered startup round state coherent and translates
 //! those updates into status headers, warnings, and queued-input release points.
+//! Initial and runtime diagnostics remain in retained history and the warnings viewer;
+//! compact history hides their full text behind the persistent warning notice.
 
 use std::collections::BTreeSet;
 
+use codex_app_server_protocol::McpServerStartupFailureReason;
 use codex_app_server_protocol::McpServerStartupState;
 use codex_app_server_protocol::McpServerStatusUpdatedNotification;
 use codex_config::types::StartupNoticeLevel;
@@ -15,18 +18,21 @@ use super::ChatWidget;
 const MCP_STARTUP_SINGLE_HEADER_PREFIX: &str = "Booting MCP server:";
 const MCP_STARTUP_MULTI_HEADER_PREFIX: &str = "Starting MCP servers";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum McpStartupStatus {
     Starting,
     Ready,
-    Failed { error: String },
+    Failed {
+        error: String,
+        failure_reason: Option<McpServerStartupFailureReason>,
+    },
     Cancelled,
 }
 
 impl ChatWidget {
     fn should_render_verbose_mcp_startup_warnings(&self) -> bool {
         matches!(
-            self.config.tui_startup_notices.mcp_startup_errors,
+            self.local_settings.tui.startup_notices.mcp_startup_errors,
             StartupNoticeLevel::Verbose
         )
     }
@@ -90,25 +96,36 @@ impl ChatWidget {
             // Normal path: fold the update into the active round and surface
             // per-server failures immediately.
             let mut startup_status = self.mcp_startup_status.take().unwrap_or_default();
-            if let McpStartupStatus::Failed { error } = &status {
-                let already_reported = matches!(
-                    startup_status.get(&server),
-                    Some(McpStartupStatus::Failed { error: previous }) if previous == error
+            if let McpStartupStatus::Failed {
+                error,
+                failure_reason,
+            } = &status
+                && startup_status.get(&server) != Some(&status)
+                && self.should_render_verbose_mcp_startup_warnings()
+            {
+                self.add_mcp_startup_warning(
+                    vec![error.clone()],
+                    [server.clone()],
+                    *failure_reason,
                 );
-                if !already_reported && self.should_render_verbose_mcp_startup_warnings() {
-                    self.on_warning(error);
-                }
             }
             startup_status.insert(server, status);
             startup_status
         };
         if activated_pending_round {
             // A promoted buffered round may already contain terminal failures.
-            for state in startup_status.values() {
-                if let McpStartupStatus::Failed { error } = state {
-                    if self.should_render_verbose_mcp_startup_warnings() {
-                        self.on_warning(error);
-                    }
+            for (server, state) in &startup_status {
+                if let McpStartupStatus::Failed {
+                    error,
+                    failure_reason,
+                } = state
+                    && self.should_render_verbose_mcp_startup_warnings()
+                {
+                    self.add_mcp_startup_warning(
+                        vec![error.clone()],
+                        [server.clone()],
+                        *failure_reason,
+                    );
                 }
             }
         }
@@ -193,7 +210,7 @@ impl ChatWidget {
     }
 
     pub(super) fn finish_mcp_startup(&mut self, failed: Vec<String>, cancelled: Vec<String>) {
-        match self.config.tui_startup_notices.mcp_startup_errors {
+        match self.local_settings.tui.startup_notices.mcp_startup_errors {
             StartupNoticeLevel::Quiet => {}
             StartupNoticeLevel::Summary => {
                 let mut parts = Vec::new();
@@ -300,14 +317,31 @@ impl ChatWidget {
                 .starts_with(MCP_STARTUP_MULTI_HEADER_PREFIX)
     }
 
+    fn add_mcp_startup_warning(
+        &mut self,
+        messages: Vec<String>,
+        servers: impl IntoIterator<Item = String>,
+        failure_reason: Option<McpServerStartupFailureReason>,
+    ) {
+        self.add_to_history(crate::history_cell::StartupWarningsCell::mcp(
+            messages,
+            servers,
+            failure_reason,
+        ));
+    }
+
+    /// Update startup state and retry installed-app discovery when its MCP server becomes ready.
     pub(super) fn on_mcp_server_status_updated(
         &mut self,
         notification: McpServerStatusUpdatedNotification,
     ) {
+        let refresh_connector_mentions = notification.name == "codex_apps"
+            && notification.status == McpServerStartupState::Ready;
         let status = match notification.status {
             McpServerStartupState::Starting => McpStartupStatus::Starting,
             McpServerStartupState::Ready => McpStartupStatus::Ready,
             McpServerStartupState::Failed => McpStartupStatus::Failed {
+                failure_reason: notification.failure_reason,
                 error: notification.error.unwrap_or_else(|| {
                     format!("MCP client for `{}` failed to start", notification.name)
                 }),
@@ -319,5 +353,8 @@ impl ChatWidget {
             status,
             /*complete_when_settled*/ true,
         );
+        if refresh_connector_mentions {
+            self.refresh_connector_mentions(/*force_refresh*/ false);
+        }
     }
 }

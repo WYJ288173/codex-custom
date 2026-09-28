@@ -17,7 +17,7 @@ class CodexCustomSyncWorkflowTest(unittest.TestCase):
         match = re.search(r'(?m)^\[workspace\.package\]\nversion = "([^"]+)"', text)
 
         self.assertIsNotNone(match)
-        self.assertEqual("0.0.0", match.group(1))
+        self.assertRegex(match.group(1), r"^\d+\.\d+\.\d+$")
         self.assertNotIn("-custom.", cargo_lock)
 
     def test_workflow_builds_custom_version_from_latest_upstream_release(self) -> None:

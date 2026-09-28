@@ -1,6 +1,10 @@
 use std::collections::HashMap;
+use std::ffi::OsStr;
+use std::ffi::OsString;
+use std::future::Future;
 use std::io::ErrorKind;
 use std::path::Path;
+#[cfg(not(unix))]
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -9,10 +13,14 @@ use std::time::Duration;
 use std::time::Instant;
 
 use async_channel::Sender;
-use codex_protocol::shell_environment::scrub_non_inheritable_env_vars;
+use codex_protocol::shell_environment::is_non_inheritable_env_var;
+#[cfg(unix)]
+use codex_utils_pty::Command;
 #[cfg(windows)]
 use codex_utils_pty::JobObject;
+use futures::future::try_join;
 use tokio::io::AsyncWriteExt;
+#[cfg(not(unix))]
 use tokio::process::Command;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
@@ -44,6 +52,7 @@ const MAX_CONCURRENT_ASYNC_HOOKS: usize = 8;
 #[derive(Clone)]
 pub(crate) struct CommandHookRuntime {
     shell: CommandShell,
+    environment: Arc<Vec<(OsString, OsString)>>,
     result_sender: Sender<HookCompletedEvent>,
     state: Arc<Mutex<CommandHookRuntimeState>>,
     output_spiller: HookOutputSpiller,
@@ -66,11 +75,13 @@ impl Default for CommandHookRuntimeState {
 impl CommandHookRuntime {
     pub(crate) fn new(
         shell: CommandShell,
+        environment: Arc<Vec<(OsString, OsString)>>,
         thread_id: ThreadId,
         result_sender: Sender<HookCompletedEvent>,
     ) -> Self {
         Self {
             shell,
+            environment,
             result_sender,
             state: Arc::new(Mutex::new(CommandHookRuntimeState::default())),
             output_spiller: HookOutputSpiller::new(thread_id),
@@ -86,6 +97,7 @@ impl CommandHookRuntime {
     pub(crate) fn reconfigured(&self, shell: CommandShell) -> Self {
         Self {
             shell,
+            environment: Arc::clone(&self.environment),
             result_sender: self.result_sender.clone(),
             state: Arc::clone(&self.state),
             output_spiller: self.output_spiller.clone(),
@@ -104,23 +116,18 @@ impl CommandHookRuntime {
         turn_id: Option<String>,
         parse: fn(&ConfiguredHandler, HandlerRunResult, Option<String>) -> ParsedHandler<T>,
     ) {
-        let mut state = self.lock_state();
-        if self.result_sender.is_closed() || state.concurrency_limit.is_closed() {
+        if self.result_sender.is_closed() {
             return;
         }
 
-        while state.tasks.try_join_next().is_some() {}
         let result_sender = self.result_sender.clone();
-        let concurrency_limit = Arc::clone(&state.concurrency_limit);
         let runtime = self.clone();
-        state.tasks.spawn(async move {
-            let Ok(_permit) = concurrency_limit.acquire_owned().await else {
-                return;
-            };
+        self.schedule_async_task(async move {
             let result = match &handler.kind {
                 ConfiguredHandlerKind::Command { command, env, .. } => {
                     run_command(&runtime, &handler, command, env, &input_json, &cwd).await
                 }
+                ConfiguredHandlerKind::McpTool { .. } => return,
             };
             let mut hook_result = parse(&handler, result, turn_id).completed;
             let mut entries = Vec::new();
@@ -157,6 +164,22 @@ impl CommandHookRuntime {
         });
     }
 
+    pub(crate) fn schedule_async_task(&self, task: impl Future<Output = ()> + Send + 'static) {
+        let mut state = self.lock_state();
+        if state.concurrency_limit.is_closed() {
+            return;
+        }
+
+        while state.tasks.try_join_next().is_some() {}
+        let concurrency_limit = Arc::clone(&state.concurrency_limit);
+        state.tasks.spawn(async move {
+            let Ok(_permit) = concurrency_limit.acquire_owned().await else {
+                return;
+            };
+            task.await;
+        });
+    }
+
     pub(crate) async fn shutdown(&self) {
         let mut tasks = {
             let mut state = self.lock_state();
@@ -186,7 +209,7 @@ impl CommandHookRuntime {
 pub(crate) async fn run_command(
     runtime: &CommandHookRuntime,
     handler: &ConfiguredHandler,
-    command: &str,
+    command_line: &str,
     env: &HashMap<String, String>,
     input_json: &str,
     cwd: &Path,
@@ -194,16 +217,8 @@ pub(crate) async fn run_command(
     let started_at = chrono::Utc::now().timestamp();
     let started = Instant::now();
 
-    let mut command = build_command(&runtime.shell, command, env);
-    command
-        .current_dir(cwd)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-
-    #[cfg(unix)]
-    command.process_group(0);
+    let mut command = build_command(&runtime.shell, command_line, &runtime.environment, env);
+    command.current_dir(cwd);
 
     #[cfg(windows)]
     let mut process_tree_job = JobObject::create().ok();
@@ -245,27 +260,28 @@ pub(crate) async fn run_command(
         job: process_tree_job,
     };
 
-    if let Some(mut stdin) = child.stdin.take()
-        && let Err(err) = stdin.write_all(input_json.as_bytes()).await
-        && err.kind() != ErrorKind::BrokenPipe
-    {
-        let _ = child.kill().await;
-        return finish_command_run(
-            started_at,
-            started,
-            CommandRunCompletion {
-                exit_code: None,
-                stdout: String::new(),
-                stderr: String::new(),
-                error: Some(format!("failed to write hook stdin: {err}")),
-                outcome: "stdin_error",
-            },
-        );
-    }
+    let stdin = child.stdin.take();
+    let write_stdin = async {
+        if let Some(mut stdin) = stdin
+            && let Err(err) = stdin.write_all(input_json.as_bytes()).await
+            && err.kind() != ErrorKind::BrokenPipe
+        {
+            return Err(("stdin_error", format!("failed to write hook stdin: {err}")));
+        }
+        Ok(())
+    };
+    let wait_with_output = async {
+        child
+            .wait_with_output()
+            .await
+            .map_err(|err| ("wait_error", err.to_string()))
+    };
 
     let timeout_duration = Duration::from_secs(handler.timeout_sec);
-    match timeout(timeout_duration, child.wait_with_output()).await {
-        Ok(Ok(output)) => {
+    // Drain output while sending input so neither pipe can block the other, and
+    // include stdin writes in the deadline even when the hook never reads them.
+    match timeout(timeout_duration, try_join(write_stdin, wait_with_output)).await {
+        Ok(Ok(((), output))) => {
             // Successfully completed hooks may intentionally leave detached helpers running.
             #[cfg(windows)]
             if let Some(job) = process_tree_guard.job.as_ref() {
@@ -284,15 +300,15 @@ pub(crate) async fn run_command(
                 },
             )
         }
-        Ok(Err(err)) => finish_command_run(
+        Ok(Err((outcome, error))) => finish_command_run(
             started_at,
             started,
             CommandRunCompletion {
                 exit_code: None,
                 stdout: String::new(),
                 stderr: String::new(),
-                error: Some(err.to_string()),
-                outcome: "wait_error",
+                error: Some(error),
+                outcome,
             },
         ),
         Err(_) => finish_command_run(
@@ -371,53 +387,79 @@ fn finish_command_run(
 fn build_command(
     shell: &CommandShell,
     command_line: &str,
+    environment: &[(OsString, OsString)],
     env: &HashMap<String, String>,
 ) -> Command {
     let mut command = if shell.program.is_empty() {
-        default_shell_command()
+        Command::new(default_shell_program(environment))
     } else {
         Command::new(&shell.program)
     };
     if shell.program.is_empty() {
         #[cfg(windows)]
-        command.raw_arg(format!(r#""{command_line}""#));
-
+        command.arg("/C");
         #[cfg(not(windows))]
-        command.arg(command_line);
+        command.arg("-lc");
     } else {
         command.args(&shell.args);
-
-        #[cfg(windows)]
-        if shell.args.iter().any(|arg| arg.eq_ignore_ascii_case("/c")) {
-            command.raw_arg(format!(r#""{command_line}""#));
-        } else {
-            command.arg(command_line);
-        }
-
-        #[cfg(not(windows))]
+    }
+    #[cfg(windows)]
+    if shell.program.is_empty() || shell.args.iter().any(|arg| arg.eq_ignore_ascii_case("/c")) {
+        command.raw_arg(format!(r#""{command_line}""#));
+    } else {
         command.arg(command_line);
     }
-    command.envs(env);
-    scrub_non_inheritable_env_vars(command.as_std_mut());
+    #[cfg(not(windows))]
+    command.arg(command_line);
+
+    #[cfg(unix)]
+    command.process_mode(codex_utils_pty::ProcessMode::NewSession);
+    #[cfg(not(unix))]
+    command
+        .env_clear()
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+
+    // Both launchers start with an empty environment. Replay the session snapshot
+    // before hook overrides, filtering restricted names from both sources.
+    command.envs(
+        environment
+            .iter()
+            .map(|(key, value)| (key.as_os_str(), value.as_os_str()))
+            .chain(
+                env.iter()
+                    .map(|(key, value)| (OsStr::new(key), OsStr::new(value))),
+            )
+            .filter(|(key, _)| !key.to_str().is_some_and(is_non_inheritable_env_var)),
+    );
     command
 }
 
-fn default_shell_command() -> Command {
+fn default_shell_program(environment: &[(OsString, OsString)]) -> OsString {
     #[cfg(windows)]
-    {
-        let comspec = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string());
-        let mut command = Command::new(comspec);
-        command.arg("/C");
-        command
-    }
+    let (environment_variable, fallback_program) = ("COMSPEC", "cmd.exe");
 
     #[cfg(not(windows))]
-    {
-        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-        let mut command = Command::new(shell);
-        command.arg("-lc");
-        command
-    }
+    let (environment_variable, fallback_program) = ("SHELL", "/bin/sh");
+
+    environment
+        .iter()
+        .find(|(key, _)| {
+            #[cfg(windows)]
+            {
+                key.to_str()
+                    .is_some_and(|key| key.eq_ignore_ascii_case(environment_variable))
+            }
+
+            #[cfg(not(windows))]
+            {
+                key == OsStr::new(environment_variable)
+            }
+        })
+        .map(|(_, value)| value.clone())
+        .unwrap_or_else(|| OsString::from(fallback_program))
 }
 
 #[cfg(test)]

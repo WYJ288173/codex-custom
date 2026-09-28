@@ -54,15 +54,13 @@ use rmcp::transport::streamable_http_client::StreamableHttpPostResponse;
 use sse_stream::Sse;
 use sse_stream::SseStream;
 use tokio::sync::oneshot;
+use tracing::Instrument;
 
+use crate::bounded_stdio_transport::MAX_MCP_STDIO_LINE_BYTES;
 use crate::event_notification_transport::MAX_EVENT_NOTIFICATION_BYTES;
-use crate::incoming_jsonrpc::deserialize_incoming_jsonrpc_message;
-use crate::incoming_jsonrpc::normalize_sse_jsonrpc_message;
-use crate::local_stdio_transport::MAX_MCP_STDIO_LINE_BYTES;
+use crate::http_client_redirect::SameOriginRedirectHttpClient;
 
-mod www_authenticate;
-
-use self::www_authenticate::insufficient_scope_challenge;
+use crate::www_authenticate::insufficient_scope_challenge;
 
 const EVENT_STREAM_MIME_TYPE: &str = "text/event-stream";
 const JSON_MIME_TYPE: &str = "application/json";
@@ -124,7 +122,7 @@ impl StreamableHttpClientAdapter {
         initialize_deadline: Arc<Mutex<Option<Instant>>>,
     ) -> Self {
         Self {
-            http_client,
+            http_client: Arc::new(SameOriginRedirectHttpClient::new(http_client)),
             default_headers,
             auth_provider,
             event_stream_cancellations: Arc::default(),
@@ -221,7 +219,9 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             None
         };
 
-        let body = serde_json::to_vec(&message).map_err(StreamableHttpError::Deserialize)?;
+        let body = serde_json::to_value(&message).map_err(StreamableHttpError::Deserialize)?;
+        let request_span = crate::trace_context::request_span(&body);
+        let body = serde_json::to_vec(&body).map_err(StreamableHttpError::Deserialize)?;
         let has_authorization_header = headers.contains_key(AUTHORIZATION);
         if let JsonRpcMessage::Notification(notification) = &message
             && let ClientNotification::CancelledNotification(cancelled) = &notification.notification
@@ -236,16 +236,19 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             return Ok(StreamableHttpPostResponse::Accepted);
         }
 
-        let request = self.http_client.http_request_stream(HttpRequestParams {
-            method: "POST".to_string(),
-            url: uri.to_string(),
-            headers: protocol_headers(&headers),
-            body: Some(body.into()),
-            timeout_ms,
-            redirect_policy,
-            request_id: "buffered-request".to_string(),
-            stream_response: true,
-        });
+        let request = self
+            .http_client
+            .http_request_stream(HttpRequestParams {
+                method: "POST".to_string(),
+                url: uri.to_string(),
+                headers: protocol_headers(&headers),
+                body: Some(body.into()),
+                timeout_ms,
+                redirect_policy,
+                request_id: "buffered-request".to_string(),
+                stream_response: true,
+            })
+            .instrument(request_span);
         let response = if is_event_stream_request {
             tokio::time::timeout(EVENT_STREAM_RESPONSE_TIMEOUT, request)
                 .await
@@ -278,12 +281,19 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
                 StreamableHttpClientAdapterError::SessionExpired404,
             ));
         }
-        if response.status == StatusCode::UNAUTHORIZED.as_u16()
-            && let Some(header) = response_header(&response.headers, WWW_AUTHENTICATE)
-        {
-            return Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(
-                header,
-            )));
+        if response.status == StatusCode::UNAUTHORIZED.as_u16() {
+            let challenges = response
+                .headers
+                .iter()
+                .filter(|header| header.name.eq_ignore_ascii_case(WWW_AUTHENTICATE.as_str()))
+                .map(|header| header.value.as_str())
+                .collect::<Vec<_>>();
+            if !challenges.is_empty() {
+                // RFC 9110 allows combining these list-based fields; keep challenges after the first.
+                return Err(StreamableHttpError::AuthRequired(AuthRequiredError::new(
+                    challenges.join(", "),
+                )));
+            }
         }
         if response.status == StatusCode::FORBIDDEN.as_u16()
             && let Some(challenge) = insufficient_scope_challenge(&response.headers)
@@ -356,11 +366,7 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
         }
         match content_type.as_deref() {
             Some(content_type) if content_type.starts_with(EVENT_STREAM_MIME_TYPE) => {
-                let mut event_stream = sse_stream_from_body(
-                    body_stream,
-                    maximum_response_bytes,
-                    is_discovery_request || uses_modern_protocol,
-                );
+                let mut event_stream = sse_stream_from_body(body_stream, maximum_response_bytes);
                 if mcp_method.as_deref() == Some(DiscoverRequestMethod::VALUE) {
                     while let Some(event) = event_stream.next().await {
                         let event = event.map_err(StreamableHttpError::Sse)?;
@@ -374,7 +380,7 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
                             continue;
                         }
 
-                        let response = deserialize_incoming_jsonrpc_message(data.as_bytes())
+                        let response = serde_json::from_slice(data.as_bytes())
                             .map_err(StreamableHttpError::Deserialize)?;
                         let response = legacy_discovery_fallback_response(
                             &message, response, /*allow_uncorrelated_http_rejection*/ false,
@@ -424,8 +430,8 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             }
             Some(content_type) if content_type.starts_with(JSON_MIME_TYPE) => {
                 let body = collect_body(&mut body_stream, maximum_response_bytes).await?;
-                let response_message = deserialize_incoming_jsonrpc_message(&body)
-                    .map_err(StreamableHttpError::Deserialize)?;
+                let response_message =
+                    serde_json::from_slice(&body).map_err(StreamableHttpError::Deserialize)?;
                 Ok(StreamableHttpPostResponse::Json(
                     legacy_discovery_fallback_response(
                         &message,
@@ -592,11 +598,7 @@ impl StreamableHttpClient for StreamableHttpClientAdapter {
             .and_then(|value| value.to_str().ok())
             .is_some_and(|version| version == ProtocolVersion::V_2026_07_28.as_str());
         let maximum_response_bytes = uses_modern_protocol.then_some(MAX_MCP_STDIO_LINE_BYTES);
-        Ok(sse_stream_from_body(
-            body_stream,
-            maximum_response_bytes,
-            uses_modern_protocol,
-        ))
+        Ok(sse_stream_from_body(body_stream, maximum_response_bytes))
     }
 }
 
@@ -720,6 +722,7 @@ fn protocol_headers(headers: &HeaderMap) -> Vec<HttpHeader> {
             Some(HttpHeader {
                 name: name.as_str().to_string(),
                 value: std::str::from_utf8(value.as_bytes()).ok()?.to_string(),
+                value_env_var: None,
             })
         })
         .collect()
@@ -811,7 +814,7 @@ fn legacy_discovery_fallback_response(
     {
         return ServerJsonRpcMessage::error(
             ErrorData::new(
-                ErrorCode::INVALID_REQUEST,
+                ErrorCode::HEADER_MISMATCH,
                 "server/discover method-not-found response did not match its request ID",
                 None,
             ),
@@ -864,6 +867,20 @@ fn legacy_discovery_fallback_response(
             Some(request.id.clone()),
         )
     } else {
+        let mut response = response;
+        if let JsonRpcMessage::Error(error) = &mut response
+            && !matches!(
+                error.error.code,
+                ErrorCode::METHOD_NOT_FOUND
+                    | ErrorCode::UNSUPPORTED_PROTOCOL_VERSION
+                    | ErrorCode::HEADER_MISMATCH
+                    | ErrorCode::MISSING_REQUIRED_CLIENT_CAPABILITY
+            )
+        {
+            // rmcp 3.1.3 falls back on other discovery errors, so mark unproven
+            // rejections as modern failures while preserving their diagnostics.
+            error.error.code = ErrorCode::HEADER_MISMATCH;
+        }
         response
     }
 }
@@ -947,7 +964,6 @@ async fn collect_body(
 fn sse_stream_from_body(
     body_stream: HttpResponseBodyStream,
     maximum_event_bytes: Option<usize>,
-    modern_session: bool,
 ) -> BoxStream<'static, std::result::Result<Sse, sse_stream::Error>> {
     SseStream::from_bytes_stream(stream::unfold(
         (body_stream, SseEventSizeLimit::new(maximum_event_bytes)),
@@ -965,16 +981,6 @@ fn sse_stream_from_body(
             }
         },
     ))
-    .map(move |event| {
-        event.map(|mut event| {
-            if let Some(payload) = event.data.as_deref()
-                && let Some(normalized) = normalize_sse_jsonrpc_message(payload, modern_session)
-            {
-                event.data = Some(normalized);
-            }
-            event
-        })
-    })
     .boxed()
 }
 
