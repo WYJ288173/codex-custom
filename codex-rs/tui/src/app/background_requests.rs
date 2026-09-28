@@ -33,6 +33,8 @@ use codex_utils_absolute_path::AbsolutePathBuf;
 
 pub(super) const THREAD_USAGE_FETCH_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(/*secs*/ 65);
+const TOKEN_ACTIVITY_FETCH_TIMEOUT: std::time::Duration =
+    std::time::Duration::from_secs(/*secs*/ 15);
 const RATE_LIMIT_RESET_REQUEST_TIMEOUT: std::time::Duration =
     std::time::Duration::from_secs(/*secs*/ 15);
 const WORKSPACE_HEADLINE_FETCH_TIMEOUT: std::time::Duration =

@@ -784,6 +784,7 @@ async fn status_line_five_hour_item_includes_reset_time_when_available() {
     chat.on_rate_limit_snapshot(Some(RateLimitSnapshot {
         limit_id: None,
         limit_name: None,
+        normal_model_slug: None,
         primary: Some(RateLimitWindow {
             used_percent: 40,
             window_duration_mins: Some(5 * 60),

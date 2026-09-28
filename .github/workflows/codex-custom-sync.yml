@@ -142,7 +142,7 @@ jobs:
         working-directory: codex-rs
         run: |
           set -euo pipefail
-          cargo build --target "$TARGET" --release --bin codex
+          cargo build --target "$TARGET" --release --bin codex --bin codex-code-mode-host
 
       - name: Package artifact
         id: package
@@ -154,7 +154,8 @@ jobs:
           package_dir="${RUNNER_TEMP}/${release_name}"
           mkdir -p "$package_dir"
           cp "codex-rs/target/${TARGET}/release/codex" "$package_dir/codex-custom"
-          chmod 0755 "$package_dir/codex-custom"
+          cp "codex-rs/target/${TARGET}/release/codex-code-mode-host" "$package_dir/codex-code-mode-host"
+          chmod 0755 "$package_dir/codex-custom" "$package_dir/codex-code-mode-host"
           cp scripts/install-codex-custom.sh "$package_dir/install-codex-custom.sh"
           cp docs/codex-custom-update.md "$package_dir/README.md"
           tar -C "$package_dir" -czf "${release_name}-${TARGET}.tar.gz" .

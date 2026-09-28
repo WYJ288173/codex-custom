@@ -291,6 +291,7 @@ mod tests {
 
     fn response() -> GetAccountTokenUsageResponse {
         GetAccountTokenUsageResponse {
+            thread_usage: None,
             summary: AccountTokenUsageSummary {
                 lifetime_tokens: Some(42_100_000),
                 peak_daily_tokens: None,
@@ -347,6 +348,7 @@ mod tests {
     #[test]
     fn summarizes_iso_datetime_bucket_dates() {
         let response = GetAccountTokenUsageResponse {
+            thread_usage: None,
             summary: AccountTokenUsageSummary {
                 lifetime_tokens: Some(42_100_000),
                 peak_daily_tokens: None,
@@ -373,6 +375,7 @@ mod tests {
     #[test]
     fn converts_rfc3339_bucket_dates_to_east_8_before_summarizing() {
         let response = GetAccountTokenUsageResponse {
+            thread_usage: None,
             summary: AccountTokenUsageSummary {
                 lifetime_tokens: Some(42_100_000),
                 peak_daily_tokens: None,
@@ -399,6 +402,7 @@ mod tests {
     #[test]
     fn summarizes_latest_backend_bucket_when_local_today_is_ahead() {
         let response = GetAccountTokenUsageResponse {
+            thread_usage: None,
             summary: AccountTokenUsageSummary {
                 lifetime_tokens: Some(174_144_367),
                 peak_daily_tokens: Some(62_805_203),
