@@ -435,6 +435,10 @@ impl ChatWidget {
                         McpServerStatus {
                             name: focus_server,
                             plugin_id: None,
+        runtime_status: None,
+        http_origin: None,
+        server_capabilities: None,
+        tools_error: None,
                             server_info: None,
                             tools: Default::default(),
                             resources: Vec::new(),
@@ -451,6 +455,10 @@ impl ChatWidget {
                 McpServerStatus {
                     name: focus_server,
                     plugin_id: None,
+                    runtime_status: None,
+                    http_origin: None,
+                    server_capabilities: None,
+                    tools_error: None,
                     server_info: None,
                     tools: Default::default(),
                     resources: Vec::new(),

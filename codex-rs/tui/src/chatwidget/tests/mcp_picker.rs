@@ -30,6 +30,10 @@ fn status(
     McpServerStatus {
         name: name.to_string(),
         plugin_id: None,
+        runtime_status: None,
+        http_origin: None,
+        server_capabilities: None,
+        tools_error: None,
         server_info: connected.then(|| McpServerInfo {
             name: name.to_string(),
             title: None,

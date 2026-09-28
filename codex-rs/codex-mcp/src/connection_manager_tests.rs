@@ -5196,6 +5196,48 @@ async fn reconcile_reusable_server_with_mcp_config(
     .await
 }
 
+async fn reconcile_reusable_server_with_startup_policy(
+    previous: &McpConnectionSet,
+    config: McpServerConfig,
+    runtime_context: McpRuntimeContext,
+    startup_policy: McpStartupPolicy,
+    tool_catalog_cache: McpToolCatalogCache,
+) -> McpConnectionSet {
+    let codex_home = tempdir().expect("tempdir");
+    let mcp_config = crate::mcp::tests::test_mcp_config(codex_home.path().to_path_buf());
+    let (tx_event, _rx_event) = async_channel::unbounded();
+    McpConnectionSet::new(
+        Some(previous),
+        McpPublicationGate::already_published(),
+        McpRuntimeInput {
+            startup_policy,
+            config: Arc::new(mcp_config),
+            plugins_available: false,
+            ready_selected_capability_roots: Vec::new(),
+            mcp_servers: HashMap::from([(
+                "docs".to_string(),
+                EffectiveMcpServer::configured(config),
+            )]),
+            submit_id: "refresh".to_string(),
+            tx_event: Some(tx_event),
+            startup_cancellation_token: CancellationToken::new(),
+            runtime_context,
+            codex_apps_tools_cache: ConnectorRuntimeManager::default(),
+            tool_catalog_cache,
+            codex_apps_tools_cache_key: ConnectorRuntimeContextKey::personal(
+                /*account_id*/ None, /*chatgpt_user_id*/ None,
+            ),
+            client_mcp_extensions: ClientMcpExtensions::default(),
+            auth: None,
+            auth_manager: None,
+            elicitation_reviewer: None,
+            elicitation_lifecycle: None,
+        },
+        ElicitationRequestRouter::default(),
+    )
+    .await
+}
+
 #[tokio::test]
 async fn read_only_policy_does_not_reuse_a_writable_connection() {
     let codex_home = tempdir().expect("tempdir");

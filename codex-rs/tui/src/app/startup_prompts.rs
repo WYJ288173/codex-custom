@@ -489,7 +489,9 @@ mod tests {
             .expect("config should build");
         config.tui_startup_notices.skill_load_errors = level;
 
-        for message in skill_load_warning_messages(errors, level) {
+        for message in
+            skill_load_warning_messages(errors, config.tui_startup_notices.skill_load_errors)
+        {
             app_event_tx.send(AppEvent::InsertHistoryCell(Box::new(
                 history_cell::new_warning_event(message),
             )));

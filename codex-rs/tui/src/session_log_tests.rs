@@ -110,6 +110,10 @@ fn mcp_navigation_session_log_metadata_never_formats_server_payloads() {
     let server = codex_app_server_protocol::McpServerStatus {
         name: "sentry".to_string(),
         plugin_id: None,
+        runtime_status: None,
+        http_origin: None,
+        server_capabilities: None,
+        tools_error: None,
         server_info: None,
         tools: [(secret_tool_name.to_string(), tool)].into_iter().collect(),
         resources: Vec::new(),

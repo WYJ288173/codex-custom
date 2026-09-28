@@ -237,17 +237,25 @@ impl ChatWidget {
             }
             StartupNoticeLevel::Verbose => {
                 if !cancelled.is_empty() {
-                    self.on_warning(format!(
-                        "MCP startup interrupted. The following servers were not initialized: {}",
-                        cancelled.join(", ")
-                    ));
+                    self.add_mcp_startup_warning(
+                        vec![format!(
+                            "MCP startup interrupted. The following servers were not initialized: {}",
+                            cancelled.join(", ")
+                        )],
+                        cancelled,
+                        /*failure_reason*/ None,
+                    );
                 }
                 let mut parts = Vec::new();
                 if !failed.is_empty() {
                     parts.push(format!("failed: {}", failed.join(", ")));
                 }
                 if !parts.is_empty() {
-                    self.on_warning(format!("MCP startup incomplete ({})", parts.join("; ")));
+                    self.add_mcp_startup_warning(
+                        vec![format!("MCP startup incomplete ({})", parts.join("; "))],
+                        failed,
+                        /*failure_reason*/ None,
+                    );
                 }
             }
         }

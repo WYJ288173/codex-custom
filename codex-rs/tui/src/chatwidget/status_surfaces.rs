@@ -1325,6 +1325,7 @@ mod tests {
     ) -> RateLimitSnapshotDisplay {
         RateLimitSnapshotDisplay {
             limit_name: "codex".to_string(),
+            normal_model_slug: None,
             captured_at,
             primary: Some(window),
             secondary: None,
