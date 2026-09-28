@@ -5376,6 +5376,11 @@ async fn active_side_thread_renders_live_mcp_startup_notifications() {
         codex_config::types::StartupNoticeLevel::Verbose;
     app.local_settings.tui.startup_notices.mcp_startup_errors =
         codex_config::types::StartupNoticeLevel::Verbose;
+    app.chat_widget
+        .local_settings
+        .tui
+        .startup_notices
+        .mcp_startup_errors = codex_config::types::StartupNoticeLevel::Verbose;
     while app_event_rx.try_recv().is_ok() {}
     let sentry_config = toml::from_str::<toml::Value>("command = 'true'")
         .expect("test MCP config should parse")
