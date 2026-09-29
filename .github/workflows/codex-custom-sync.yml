@@ -148,6 +148,21 @@ jobs:
           just fix -p codex-tui -p codex-cli -p codex-mcp -p codex-config
           git diff --exit-code -- '*.rs'
 
+      - name: Prepare upstream V8 release artifacts
+        env:
+          CODEX_REPO_ROOT: ${{ github.workspace }}
+        run: |
+          python3 - <<'PYTHON'
+          import os
+          from scripts.codex_package.targets import TARGET_SPECS
+          from scripts.codex_package.v8 import resolve_codex_v8_cargo_env
+
+          overrides = resolve_codex_v8_cargo_env(TARGET_SPECS[os.environ["TARGET"]])
+          with open(os.environ["GITHUB_ENV"], "a") as output:
+              for name, value in overrides.items():
+                  output.write(f"{name}={value}\n")
+          PYTHON
+
       - name: Build release binary
         working-directory: codex-rs
         run: |
