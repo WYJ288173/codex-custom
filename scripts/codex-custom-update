@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo="${CODEX_CUSTOM_REPO:-WYJ288173/codex-custom}"
+branch="${CODEX_CUSTOM_BRANCH:-feature/claude-style-statusline}"
+workflow="${CODEX_CUSTOM_WORKFLOW:-codex-custom-sync.yml}"
+target="${CODEX_CUSTOM_TARGET:-aarch64-apple-darwin}"
+publish_release="true"
+first_wait_sec="${CODEX_CUSTOM_FIRST_WAIT_SEC:-1800}"
+poll_interval_sec="${CODEX_CUSTOM_POLL_INTERVAL_SEC:-1200}"
+install_dir="${CODEX_CUSTOM_BIN_DIR:-$HOME/.local/bin}"
+trigger="true"
+run_id=""
+
+usage() {
+  cat <<'EOF'
+Usage: codex-custom-update [options]
+
+Trigger the remote codex-custom GitHub build/package workflow, wait with a long
+polling cadence, then install the exact successful release artifact locally.
+
+Options:
+  --repo owner/name          GitHub repo, default WYJ288173/codex-custom
+  --branch name             Branch, default feature/claude-style-statusline
+  --workflow file           Workflow file, default codex-custom-sync.yml
+  --target triple           Release asset target, default aarch64-apple-darwin
+  --install-dir dir         Install dir, default ~/.local/bin
+  --run-id id               Reuse an already-triggered run instead of triggering
+  --no-trigger              Do not trigger; inspect latest workflow_dispatch run
+  --first-wait-sec seconds  Initial wait before first poll, default 1800
+  --poll-sec seconds        Poll interval after first check, default 1200
+  --no-install              Stop after verifying the release
+  -h, --help                Show this help
+
+Environment overrides use the CODEX_CUSTOM_* names matching the options above.
+Requires: gh, git, bash, and scripts/install-codex-custom.sh.
+EOF
+}
+
+install_after_success="true"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo)
+      repo="${2:?--repo requires a value}"
+      shift 2
+      ;;
+    --branch)
+      branch="${2:?--branch requires a value}"
+      shift 2
+      ;;
+    --workflow)
+      workflow="${2:?--workflow requires a value}"
+      shift 2
+      ;;
+    --target)
+      target="${2:?--target requires a value}"
+      shift 2
+      ;;
+    --install-dir)
+      install_dir="${2:?--install-dir requires a value}"
+      shift 2
+      ;;
+    --run-id)
+      run_id="${2:?--run-id requires a value}"
+      trigger="false"
+      shift 2
+      ;;
+    --no-trigger)
+      trigger="false"
+      shift
+      ;;
+    --first-wait-sec)
+      first_wait_sec="${2:?--first-wait-sec requires a value}"
+      shift 2
+      ;;
+    --poll-sec)
+      poll_interval_sec="${2:?--poll-sec requires a value}"
+      shift 2
+      ;;
+    --no-install)
+      install_after_success="false"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unexpected argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+for tool in gh git jq; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    echo "$tool is required." >&2
+    exit 2
+  }
+done
+
+repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+install_script="${repo_root}/scripts/install-codex-custom.sh"
+if [[ ! -x "$install_script" ]]; then
+  echo "Missing executable installer: $install_script" >&2
+  exit 2
+fi
+
+cd "$repo_root"
+git fetch origin "$branch" >/dev/null
+head_sha="$(git rev-parse "origin/${branch}")"
+
+if [[ "$trigger" == "true" ]]; then
+  gh workflow run "$workflow" --repo "$repo" --ref "$branch" -f "publish_release=${publish_release}"
+  for _ in {1..12}; do
+    run_id="$(
+      gh run list \
+        --repo "$repo" \
+        --workflow "$workflow" \
+        --branch "$branch" \
+        --event workflow_dispatch \
+        --commit "$head_sha" \
+        --limit 1 \
+        --json databaseId \
+        --jq '.[0].databaseId // ""'
+    )"
+    [[ -n "$run_id" ]] && break
+    sleep 5
+  done
+fi
+
+if [[ -z "$run_id" ]]; then
+  run_id="$(
+    gh run list \
+      --repo "$repo" \
+      --workflow "$workflow" \
+      --branch "$branch" \
+      --event workflow_dispatch \
+      --limit 1 \
+      --json databaseId \
+      --jq '.[0].databaseId // ""'
+  )"
+fi
+if [[ -z "$run_id" ]]; then
+  echo "Could not resolve a workflow run id." >&2
+  exit 1
+fi
+
+run_url="$(gh run view "$run_id" --repo "$repo" --json url --jq .url)"
+echo "Tracking GitHub run ${run_id}: ${run_url}"
+echo "Initial wait: ${first_wait_sec}s; poll interval: ${poll_interval_sec}s"
+sleep "$first_wait_sec"
+
+while true; do
+  status_json="$(gh run view "$run_id" --repo "$repo" --json status,conclusion,headSha,url)"
+  status="$(jq -r .status <<<"$status_json")"
+  conclusion="$(jq -r '.conclusion // ""' <<<"$status_json")"
+  run_head_sha="$(jq -r .headSha <<<"$status_json")"
+  echo "Run ${run_id}: status=${status} conclusion=${conclusion:-none}"
+
+  if [[ "$status" == "completed" ]]; then
+    if [[ "$conclusion" != "success" ]]; then
+      echo "GitHub build failed. Failed logs:" >&2
+      gh run view "$run_id" --repo "$repo" --log-failed >&2 || true
+      exit 1
+    fi
+    if [[ "$run_head_sha" != "$head_sha" ]]; then
+      echo "Run headSha mismatch: expected ${head_sha}, got ${run_head_sha}" >&2
+      exit 1
+    fi
+    break
+  fi
+
+  sleep "$poll_interval_sec"
+done
+
+git fetch origin "$branch" >/dev/null
+release_short_sha="$(git rev-parse --short=12 "origin/${branch}")"
+release_tag="$(
+  gh release list \
+    --repo "$repo" \
+    --limit 50 \
+    --json tagName,isPrerelease \
+    --jq ".[] | select(.isPrerelease and (.tagName | endswith(\"-${release_short_sha}\"))) | .tagName" \
+    | head -n 1
+)"
+if [[ -z "$release_tag" ]]; then
+  echo "Could not find prerelease ending with ${release_short_sha}." >&2
+  exit 1
+fi
+
+gh release view "$release_tag" --repo "$repo" --json tagName,isPrerelease,targetCommitish,assets,url \
+  --jq '{tagName,isPrerelease,targetCommitish,url,assets:[.assets[].name]}'
+
+if [[ "$install_after_success" == "true" ]]; then
+  "$install_script" --repo "$repo" --release "$release_tag" --target "$target" --install-dir "$install_dir"
+else
+  echo "Verified release ${release_tag}; install skipped."
+fi

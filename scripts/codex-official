@@ -1,0 +1,19 @@
+#!/bin/sh
+set -eu
+
+npm_root=""
+if command -v npm >/dev/null 2>&1; then
+    npm_root="$(npm root -g 2>/dev/null || true)"
+fi
+
+if [ -n "$npm_root" ] && [ -f "$npm_root/@openai/codex/bin/codex.js" ]; then
+    exec node "$npm_root/@openai/codex/bin/codex.js" "$@"
+fi
+
+app_cli="/Applications/Codex.app/Contents/Resources/codex"
+if [ -x "$app_cli" ]; then
+    exec "$app_cli" "$@"
+fi
+
+echo "codex-official: 未找到官方 npm 安装版或 Codex.app 内置 CLI" >&2
+exit 127

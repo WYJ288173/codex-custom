@@ -9,6 +9,45 @@ If you want Codex in your code editor (VS Code, Cursor, Windsurf), <a href="http
 
 ---
 
+## About this fork: codex-custom
+
+`codex-custom` is a personal/team fork of the official OpenAI Codex CLI. It is not an official OpenAI distribution.
+
+The purpose of this fork is narrow: keep Codex behavior aligned with upstream while improving the terminal status/footer area for daily CLI use. The official Codex CLI already supports a footer/status line, but the default display is intentionally compact and conservative. For my workflow, that area does not expose enough at-a-glance information, especially when switching models, watching context pressure, and tracking token/usage state during long coding sessions.
+
+This fork keeps a Claude Code-style status line focused on visibility:
+
+- clearer model display in the bottom status/footer area;
+- context-window and token usage visibility;
+- Today / Week / Month / Total usage-oriented counters where session and rollout data are available;
+- status-line layout options that are easier to scan during long-running agent sessions;
+- a separate `codex-custom` binary so the official `codex` installation can remain untouched.
+
+The intended operating model is:
+
+```text
+official OpenAI Codex
+  -> keep following upstream
+  -> rebase codex-custom patches
+  -> publish codex-custom releases
+  -> install as ~/.local/bin/codex-custom
+```
+
+Official Codex and this fork should coexist:
+
+- use `codex` or `codex-official` when you want the official distribution;
+- use `codex-custom` when you want the custom status/footer experience;
+- do not rely on official `codex update` to preserve this fork's source changes.
+
+The fork is intentionally scoped to UI/status-line ergonomics and release/install automation. It should not change the core agent model, authentication model, API semantics, or OpenAI service behavior beyond what is necessary to keep the custom TUI surface working with upstream.
+
+For update and install details:
+
+- [codex-custom update flow](./docs/codex-custom-update.md)
+- [codex-custom release install guide](./docs/codex-custom-release-install.md)
+
+---
+
 ## Quickstart
 
 ### Installing and running Codex CLI
@@ -23,6 +62,16 @@ Run the following on Windows to install Codex CLI:
 
 ```shell
 powershell -ExecutionPolicy ByPass -c "irm https://chatgpt.com/codex/install.ps1 | iex"
+```
+
+The standalone installers download from `https://releases.openai.com/codex` by default and fall back to GitHub Releases if a metadata or asset download is unavailable. To force GitHub Releases, set `CODEX_INSTALLER_USE_RELEASES_OPENAI_COM` to `false` (`0` and `no` are also accepted):
+
+```shell
+curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_INSTALLER_USE_RELEASES_OPENAI_COM=false sh
+```
+
+```powershell
+$env:CODEX_INSTALLER_USE_RELEASES_OPENAI_COM='false'; irm https://chatgpt.com/codex/install.ps1 | iex
 ```
 
 Codex CLI can also be installed via the following package managers:
@@ -66,6 +115,8 @@ You can also use Codex with an API key, but this requires [additional setup](htt
 - [**Codex Documentation**](https://developers.openai.com/codex)
 - [**Contributing**](./docs/contributing.md)
 - [**Installing & building**](./docs/install.md)
+- [**codex-custom update flow**](./docs/codex-custom-update.md)
+- [**codex-custom release install guide**](./docs/codex-custom-release-install.md)
 - [**Open source fund**](./docs/open-source-fund.md)
 
 This repository is licensed under the [Apache-2.0 License](LICENSE).

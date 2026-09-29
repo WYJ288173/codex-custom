@@ -2,7 +2,18 @@ use codex_analytics::CompactionImplementation;
 use codex_analytics::CompactionReason;
 use codex_otel::SessionTelemetry;
 use codex_protocol::error::CodexErr;
+use codex_protocol::error::CodexErrorDetails;
 use tracing::warn;
+
+/// Returns whether a failed compaction attempt should use the current model.
+pub(crate) fn should_retry_with_current_model(error: &CodexErr) -> bool {
+    !matches!(
+        error.details(),
+        CodexErrorDetails::TurnAborted
+            | CodexErrorDetails::Interrupted
+            | CodexErrorDetails::SessionBudgetExceeded
+    )
+}
 
 pub(crate) fn record_model_fallback(
     session_telemetry: &SessionTelemetry,
@@ -21,7 +32,6 @@ pub(crate) fn record_model_fallback(
     let implementation_tag = match implementation {
         CompactionImplementation::Responses => "responses",
         CompactionImplementation::ResponsesCompactionV2 => "responses_compaction_v2",
-        CompactionImplementation::ResponsesCompact => "responses_compact",
     };
     let outcome = if fallback_error.is_none() {
         "succeeded"

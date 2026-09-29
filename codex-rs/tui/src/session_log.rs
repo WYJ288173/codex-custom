@@ -120,27 +120,58 @@ pub(crate) fn maybe_init(config: &Config) {
 }
 
 pub(crate) fn log_inbound_app_event(event: &AppEvent) {
-    // Log only if enabled
+    log_inbound_app_event_with(&LOGGER, event);
+}
+
+/// Keep the session-log format even though ticks no longer use the app-event queue.
+pub(crate) fn log_commit_tick() {
     if !LOGGER.is_enabled() {
+        return;
+    }
+    let value = json!({
+        "ts": now_ts(),
+        "dir": "to_tui",
+        "kind": "app_event",
+        "variant": "CommitTick",
+    });
+    LOGGER.write_json_line(value);
+}
+
+fn log_inbound_app_event_with(logger: &SessionLogger, event: &AppEvent) {
+    // Log only if enabled
+    if !logger.is_enabled() {
+        return;
+    }
+
+    if let Some(metadata) = safe_app_event_metadata(event) {
+        let mut value = json!({
+            "ts": now_ts(),
+            "dir": "to_tui",
+            "kind": "app_event",
+        });
+        if let (Some(record), Some(metadata)) = (value.as_object_mut(), metadata.as_object()) {
+            record.extend(metadata.clone());
+        }
+        LOGGER.write_json_line(value);
         return;
     }
 
     match event {
-        AppEvent::NewSession => {
+        AppEvent::NewSession { .. } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",
                 "kind": "new_session",
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
-        AppEvent::ClearUi => {
+        AppEvent::ClearUi { .. } => {
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",
                 "kind": "clear_ui",
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::InsertHistoryCell(cell) => {
             let value = json!({
@@ -149,7 +180,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "kind": "insert_history_cell",
                 "lines": cell.transcript_lines(u16::MAX).len(),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::StartFileSearch(query) => {
             let value = json!({
@@ -158,7 +189,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "kind": "file_search_start",
                 "query": query,
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::FileSearchResult { query, matches } => {
             let value = json!({
@@ -168,7 +199,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "query": query,
                 "matches": matches.len(),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::PetPreviewLoaded { request_id, result } => {
             let value = json!({
@@ -179,7 +210,7 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "request_id": request_id,
                 "ok": result.is_ok(),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         AppEvent::PetSelectionLoaded {
             request_id,
@@ -195,18 +226,68 @@ pub(crate) fn log_inbound_app_event(event: &AppEvent) {
                 "pet_id": pet_id,
                 "ok": result.is_ok(),
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
         // Noise or control flow – record variant only
         other => {
+            let variant: &'static str = other.into();
             let value = json!({
                 "ts": now_ts(),
                 "dir": "to_tui",
                 "kind": "app_event",
-                "variant": format!("{other:?}").split('(').next().unwrap_or("app_event"),
+                "variant": variant,
             });
-            LOGGER.write_json_line(value);
+            logger.write_json_line(value);
         }
+    }
+}
+
+fn oauth_app_event_metadata(event: &AppEvent) -> Option<(&'static str, Option<bool>)> {
+    match event {
+        AppEvent::StartMcpOauth { .. } => Some(("StartMcpOauth", None)),
+        AppEvent::McpOauthLoginStarted { result, .. } => {
+            Some(("McpOauthLoginStarted", Some(result.is_ok())))
+        }
+        AppEvent::OpenPendingMcpOauthUrl { .. } => Some(("OpenPendingMcpOauthUrl", None)),
+        AppEvent::McpOauthRefreshFinished { result, .. } => {
+            Some(("McpOauthRefreshFinished", Some(result.is_ok())))
+        }
+        AppEvent::DismissMcpViews => Some(("DismissMcpViews", None)),
+        _ => None,
+    }
+}
+
+fn safe_app_event_metadata(event: &AppEvent) -> Option<serde_json::Value> {
+    if let Some((variant, ok)) = oauth_app_event_metadata(event) {
+        return Some(json!({
+            "variant": variant,
+            "ok": ok,
+        }));
+    }
+
+    match event {
+        AppEvent::McpInventoryLoaded { result, detail, .. } => Some(json!({
+            "variant": "McpInventoryLoaded",
+            "ok": result.is_ok(),
+            "count": result.as_ref().ok().map(Vec::len),
+            "detail": detail,
+        })),
+        AppEvent::McpPickerInventoryLoaded { result, .. } => Some(json!({
+            "variant": "McpPickerInventoryLoaded",
+            "ok": result.is_ok(),
+            "count": result.as_ref().ok().map(Vec::len),
+        })),
+        AppEvent::OpenMcpServerDetail { server } => Some(json!({
+            "variant": "OpenMcpServerDetail",
+            "server": server.name,
+            "tool_count": server.tools.len(),
+        })),
+        AppEvent::OpenMcpServerTools { server } => Some(json!({
+            "variant": "OpenMcpServerTools",
+            "server": server.name,
+            "tool_count": server.tools.len(),
+        })),
+        _ => None,
     }
 }
 
@@ -241,3 +322,7 @@ where
     });
     LOGGER.write_json_line(value);
 }
+
+#[cfg(test)]
+#[path = "session_log_tests.rs"]
+mod tests;
