@@ -1315,57 +1315,6 @@ fn non_weekly_secondary_window_when_primary_is_weekly(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn snapshot(
-        captured_at: chrono::DateTime<Local>,
-        window: RateLimitWindowDisplay,
-    ) -> RateLimitSnapshotDisplay {
-        RateLimitSnapshotDisplay {
-            limit_name: "codex".to_string(),
-            normal_model_slug: None,
-            captured_at,
-            primary: Some(window),
-            secondary: None,
-            credits: None,
-            individual_limit: None,
-        }
-    }
-
-    #[test]
-    fn five_hour_claude_status_includes_reset_time() {
-        let now = Local::now();
-        let window = RateLimitWindowDisplay {
-            used_percent: 18.0,
-            resets_at: Some("03:25".to_string()),
-            window_minutes: Some(300),
-        };
-        let snapshot = snapshot(now, window);
-        let (window, _) = five_hour_status_window(&snapshot).expect("5h window");
-
-        assert_eq!(
-            format_five_hour_limit(&snapshot, window, now),
-            "5h 18% reset 03:25"
-        );
-    }
-
-    #[test]
-    fn expired_five_hour_claude_status_resets_to_zero_used() {
-        let now = Local::now();
-        let window = RateLimitWindowDisplay {
-            used_percent: 87.0,
-            resets_at: Some("03:25".to_string()),
-            window_minutes: Some(300),
-        };
-        let snapshot = snapshot(now - ChronoDuration::minutes(301), window);
-        let (window, _) = five_hour_status_window(&snapshot).expect("5h window");
-
-        assert_eq!(format_five_hour_limit(&snapshot, window, now), "5h 0%");
-    }
-}
-
 fn matches_window_label(window: &RateLimitWindowDisplay, label: &str) -> bool {
     window
         .window_minutes
@@ -1435,4 +1384,55 @@ where
         }
     }
     (items, invalid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snapshot(
+        captured_at: chrono::DateTime<Local>,
+        window: RateLimitWindowDisplay,
+    ) -> RateLimitSnapshotDisplay {
+        RateLimitSnapshotDisplay {
+            limit_name: "codex".to_string(),
+            normal_model_slug: None,
+            captured_at,
+            primary: Some(window),
+            secondary: None,
+            credits: None,
+            individual_limit: None,
+        }
+    }
+
+    #[test]
+    fn five_hour_claude_status_includes_reset_time() {
+        let now = Local::now();
+        let window = RateLimitWindowDisplay {
+            used_percent: 18.0,
+            resets_at: Some("03:25".to_string()),
+            window_minutes: Some(300),
+        };
+        let snapshot = snapshot(now, window);
+        let (window, _) = five_hour_status_window(&snapshot).expect("5h window");
+
+        assert_eq!(
+            format_five_hour_limit(&snapshot, window, now),
+            "5h 18% reset 03:25"
+        );
+    }
+
+    #[test]
+    fn expired_five_hour_claude_status_resets_to_zero_used() {
+        let now = Local::now();
+        let window = RateLimitWindowDisplay {
+            used_percent: 87.0,
+            resets_at: Some("03:25".to_string()),
+            window_minutes: Some(300),
+        };
+        let snapshot = snapshot(now - ChronoDuration::minutes(301), window);
+        let (window, _) = five_hour_status_window(&snapshot).expect("5h window");
+
+        assert_eq!(format_five_hour_limit(&snapshot, window, now), "5h 0%");
+    }
 }
